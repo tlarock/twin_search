@@ -1,4 +1,4 @@
-# twin_search: C++ library for enumerating sets of twins from hypergraph projection adjacency matrices.
+# twin_search: C++ library for enumerating sets of twins from hypergraph node co-occurrence adjacency matrices
 
 Code for enumerating all hypergraphs that correspond to a weighted node co-occurence matrix.
 
