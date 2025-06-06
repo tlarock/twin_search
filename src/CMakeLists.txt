@@ -1,1 +1,1 @@
-add_subdirectory(TwinSearch)
+add_subdirectory(twin_search)

@@ -688,7 +688,7 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
 // Static function that takes a factor graph and a projection (presumably the
 // one that constructed the factor graph, but this is NOT tested - results in
 // the case where the projection comes from elsewhere are undefined) and computes
-// the maximum width of the search over this factor graph.
+// the product of maximum widths of the TwinSearch tree over this factor graph.
 long double TwinSearch::compute_width_product(ProjectedGraph &proj, FactorGraph &fact) {
     // TODO I don't have a way of checking for overflow here
     long double prod = 0.0;
@@ -712,7 +712,10 @@ long double TwinSearch::compute_width_product(ProjectedGraph &proj, FactorGraph 
 // Static function that takes a factor graph and a projection (presumably the
 // one that constructed the factor graph, but this is NOT tested - results in
 // the case where the projection comes from elsewhere are undefined) and computes
-// the maximum width of the search over this factor graph.
+// the product of maximum widths of the TwinSearch tree over this factor graph.
+// This computation is carried out in log space in an attempt to avoid
+// overflow to the exten possible for large search trees. However, overflow is
+// still possible, and not controlled, so results should be checked.
 double TwinSearch::compute_log_width_product(ProjectedGraph &proj, FactorGraph &fact) {
     double logsum = 0.0;
     int degree;
