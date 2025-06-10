@@ -215,6 +215,39 @@ Hypergraph h9() {
     return h;
 }
 
+Hypergraph h10() {
+    std::set<std::vector<int> > input_hyperedges;
+    std::vector<int> he1 {2, 3, 4};
+    input_hyperedges.insert(he1);
+    std::vector<int> he2 {1, 3, 4};
+    input_hyperedges.insert(he2);
+    std::vector<int> he3 {0, 2, 5};
+    input_hyperedges.insert(he3);
+    std::vector<int> he4 {0, 1, 3};
+    input_hyperedges.insert(he4);
+    std::vector<int> he5 {0, 1, 5};
+    input_hyperedges.insert(he5);
+    Hypergraph h(input_hyperedges);
+    return h;
+}
+
+Hypergraph h11() {
+    std::set<std::vector<int> > input_hyperedges;
+    std::vector<int> he1 {1, 2, 3};
+    input_hyperedges.insert(he1);
+    std::vector<int> he2 {1, 2, 4};
+    input_hyperedges.insert(he2);
+    std::vector<int> he3 {0, 3, 4};
+    input_hyperedges.insert(he3);
+    std::vector<int> he4 {0, 2, 3};
+    input_hyperedges.insert(he4);
+    std::vector<int> he5 {0, 1, 5};
+    input_hyperedges.insert(he5);
+    Hypergraph h(input_hyperedges);
+    return h;
+}
+
+
 std::vector<Hypergraph> all_hypergraphs() {
     return std::vector<Hypergraph> {h1(), h2(), h3(), h4(), h5(), h6(), h7(), h8(), GM()};
 }
