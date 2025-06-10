@@ -49,7 +49,7 @@ set(Boost_USE_MULTITHREADED ON)
 set(Boost_USE_STATIC_RUNTIME OFF) 
 
 include_directories(${Boost_INCLUDE_DIRS})
-include_directories("./include/TwinSearch/")
+include_directories("./include/twin_search/")
 
 # NOTE: These are not managed by conan so must be included directly
 include_directories("../argparse/include")
