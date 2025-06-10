@@ -7,6 +7,9 @@ target_link_libraries(test_utils PRIVATE GTest::gtest_main)
 add_executable(test_hypergraph test_hypergraph.cpp $<TARGET_OBJECTS:objlib>)
 target_link_libraries(test_hypergraph PRIVATE GTest::gtest_main)
 
+add_executable(test_projected_graph test_projected_graph.cpp $<TARGET_OBJECTS:objlib>)
+target_link_libraries(test_projected_graph PRIVATE GTest::gtest_main)
+
 add_executable(test_random_hypergraph_generators test_random_hypergraph_generators.cpp $<TARGET_OBJECTS:objlib>)
 target_link_libraries(test_random_hypergraph_generators PRIVATE GTest::gtest_main)
 
