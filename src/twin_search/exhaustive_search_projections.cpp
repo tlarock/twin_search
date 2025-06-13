@@ -142,8 +142,9 @@ bool one_sample_write(unsigned int n, unsigned int m, unsigned int min_k, unsign
                 // Write the size_distribution/
                 std::string pairs_str = "";
                 for (std::size_t i = 0; i < size_dist.size(); i++) {
-                    if (size_dist[i] > 0)
+                    if (size_dist[i] > 0) {
                         pairs_str += std::to_string(i+min_k) + ":" + std::to_string(size_dist[i]) + ",";
+                    }
                 }
                 pairs_str.pop_back();
                 // Write num_unf,num_filt/

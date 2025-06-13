@@ -141,7 +141,7 @@ TEST(ProjectedGraphTest, FindCliquesh3) {
     };
     CliqueMap cliques = proj.compute_cliques(2, h.n);
     EXPECT_EQ(cliques.size(), gt.size());
-    for (std::size_t k = 2; k < 5; ++k) {
+    for (std::size_t k = 2; k < 6; ++k) {
         EXPECT_EQ(cliques[k].size(), gt[k].size());
         for (std::size_t i = 0; i < gt[k].size(); ++i) {
             EXPECT_TRUE(cliques[k].contains(gt[k][i]));
@@ -174,7 +174,7 @@ TEST(ProjectedGraphTest, FindCliquesh10) {
         { 0, 2, 5 },
         { 1, 3, 4 },
         { 2, 3, 4 },
-    };
+   };
     CliqueMap cliques = proj.compute_cliques(2, h.n);
     EXPECT_EQ(cliques.size(), gt.size());
     for (std::size_t k = 2; k < 5; ++k) {
@@ -225,6 +225,43 @@ TEST(ProjectedGraphTest, FindCliquesh11) {
     };
     gt[5] = std::vector<std::vector<int>> { 
         { 0, 1, 2, 3, 4 },
+    };
+    CliqueMap cliques = proj.compute_cliques(2, h.n);
+    EXPECT_EQ(cliques.size(), gt.size());
+    for (std::size_t k = 2; k < 6; ++k) {
+        EXPECT_EQ(cliques[k].size(), gt[k].size());
+        for (std::size_t i = 0; i < gt[k].size(); ++i) {
+            EXPECT_TRUE(cliques[k].contains(gt[k][i]));
+        }
+    }
+}
+
+TEST(ProjectedGraphTest, FindCliquesh12) {
+    Hypergraph h = h12();
+    ProjectedGraph proj(h);
+    std::map<int, std::vector<std::vector<int > > >  gt;
+    gt[2] = std::vector<std::vector<int>> {
+        { 0, 1 },
+        { 0, 2 },
+        { 0, 3 },
+        { 0, 4 },
+        { 0, 5 },
+        { 1, 2 },
+        { 1, 5 },
+        { 2, 3 },
+        { 2, 4 },
+        { 3, 4 },
+    };
+    gt[3] = std::vector<std::vector<int>> {
+        { 0, 1, 2 },
+        { 0, 1, 5 },
+        { 0, 2, 3 },
+        { 0, 2, 4 },
+        { 0, 3, 4 },
+        { 2, 3, 4 },
+    };
+    gt[4] = std::vector<std::vector<int>> {
+        { 0, 2, 3, 4 },
     };
     CliqueMap cliques = proj.compute_cliques(2, h.n);
     EXPECT_EQ(cliques.size(), gt.size());

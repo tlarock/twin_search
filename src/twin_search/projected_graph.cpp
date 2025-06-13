@@ -102,8 +102,10 @@ CliqueMap ProjectedGraph::compute_cliques(int min_k, int max_k)
             }
         }
         // if cliques[k+1] is empty, we can break here
-        if (cliques[k+1].size() == 0)
+        if (cliques[k+1].size() == 0) {
+            cliques.erase(k+1);
             break;
+        }
 
         k++;
     }
