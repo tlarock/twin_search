@@ -404,6 +404,8 @@ int main(int argc, char *argv[]) {
     unsigned int num_rejections = 0;
     unsigned int max_rejections = num_samples*10;
     if (!sequential_samples) {
+        // TODO: FIXME: This mutex is not necessary as feeder should be thread
+        // safe on its own
         tbb::spin_mutex feeder_mutex;
         tbb::parallel_for_each(loop_args.begin(), loop_args.end(),
                 [&](Params p, tbb::feeder<Params>& feeder)
