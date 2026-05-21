@@ -104,80 +104,88 @@ bool one_sample_write(Params &p, std::ofstream &outfile) {
     else
         h = uniform_hypergraph_configuration_model(p.n, p.gamma, p.k, p.n / 2);
 
+    if (h.m != p.m || h.n != p.n) {
+        {
+        tbb::spin_mutex::scoped_lock lock(WriteMutex);
+        std::cout << "WARNING: Constructed hypergraph with wrong number of nodes or hyperedges. Returning false." << std::endl;
+        std::cout << "Nodes: " << h.n << " Hyperedges: " << h.m << std::endl;
+        }
+        return false
+    }
+
     // Compute twins and mates
     TwinSearch twins;
-    if (h.m > 0) {
-        // Construct a projected graph object
-        ProjectedGraph proj(h);
-        
-        // Construct the TwinSearch object
-        twins = TwinSearch(proj, p.min_k, p.max_k, p.filter_isomorphic, !p.sequential, false, false);
+    // Construct a projected graph object
+    ProjectedGraph proj(h);
+    
+    // Construct the TwinSearch object
+    twins = TwinSearch(proj, p.min_k, p.max_k, p.filter_isomorphic, !p.sequential, false, false);
 
-        if (twins.feasible) {
-            // Use TwinSearch.fact to compute max width
-            max_log_width = std::round(twins.compute_log_width_product(proj, twins.fact));
-            std::chrono::time_point start = time.now();
-            if (p.width_limit_exp <= 0 || max_log_width <= p.width_limit_exp) {
-                if (!p.sequential)
-                    twins.parallel_search(p.filter_isomorphic);
-                else
-                    twins.search(p.filter_isomorphic);
-            } else {
-                return false;
-            }
-            const auto end = time.now();
-            auto dur = end - start;
-            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(dur);
-            runtime = elapsed_ms.count();
-            // Loop over the filtered twins and initialize the output data
-            // structure for each size distribution we've encountered
-            std::vector<int> size_dist(p.max_k-p.min_k+1);
-            std::vector<std::vector<int> > mate;
-            for (int i : twins.filtered_twins) {
-                mate = twins.inflate_cnodes(twins.twins[i]);
-                // Get size distribution
-                for (std::size_t he_idx = 0; he_idx < mate.size(); he_idx++) {
-                    size_dist[mate[he_idx].size()-p.min_k] += 1;
-                }
-
-                if (!twins_counts.contains(size_dist)) {
-                    twins_counts[size_dist] = std::vector<int> {0, 1};
-                } else {
-                    twins_counts[size_dist][1] += 1;
-                }
-
-                // Reset size distribution to 0
-                for (std::size_t j = 0; j < size_dist.size(); j++) { size_dist[j] = 0; }
-            }
-
-            // Loop over all unfiltered twins and count the number of
-            // unfiltered twins and pairs of mates
-            for (std::size_t i = 0; i < twins.twins.size(); i++) {
-                mate = twins.inflate_cnodes(twins.twins[i]);
-                // Get size distribution
-                for (std::size_t he_idx = 0; he_idx < mate.size(); he_idx++) {
-                    size_dist[mate[he_idx].size()-p.min_k] += 1;
-                }
-
-                if (!twins_counts.contains(size_dist)) {
-                    twins_counts[size_dist] = std::vector<int> {1, 0};
-                } else {
-                    twins_counts[size_dist][0] += 1;
-                }
-
-                // Reset size distribution to 0
-                for (std::size_t j = 0; j < size_dist.size(); j++) { size_dist[j] = 0; }
-            }
-            num_cliques = twins.fact.num_clique_nodes;
-            num_edges = twins.fact.num_edge_nodes;
-            num_mate_pairs = static_cast<int> (twins.mates.size());
+    if (twins.feasible) {
+        // Use TwinSearch.fact to compute max width
+        max_log_width = std::round(twins.compute_log_width_product(proj, twins.fact));
+        std::chrono::time_point start = time.now();
+        if (p.width_limit_exp <= 0 || max_log_width <= p.width_limit_exp) {
+            if (!p.sequential)
+                twins.parallel_search(p.filter_isomorphic);
+            else
+                twins.search(p.filter_isomorphic);
         } else {
-            {
-                tbb::spin_mutex::scoped_lock lock(WriteMutex);
-                std::cout << "WARNING: Infeasible sample detected. Check min-k and max-k. Writing 0s for this sample." << std::endl;
+            return false;
+        }
+        const auto end = time.now();
+        auto dur = end - start;
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(dur);
+        runtime = elapsed_ms.count();
+        // Loop over the filtered twins and initialize the output data
+        // structure for each size distribution we've encountered
+        std::vector<int> size_dist(p.max_k-p.min_k+1);
+        std::vector<std::vector<int> > mate;
+        for (int i : twins.filtered_twins) {
+            mate = twins.inflate_cnodes(twins.twins[i]);
+            // Get size distribution
+            for (std::size_t he_idx = 0; he_idx < mate.size(); he_idx++) {
+                size_dist[mate[he_idx].size()-p.min_k] += 1;
             }
+
+            if (!twins_counts.contains(size_dist)) {
+                twins_counts[size_dist] = std::vector<int> {0, 1};
+            } else {
+                twins_counts[size_dist][1] += 1;
+            }
+
+            // Reset size distribution to 0
+            for (std::size_t j = 0; j < size_dist.size(); j++) { size_dist[j] = 0; }
+        }
+
+        // Loop over all unfiltered twins and count the number of
+        // unfiltered twins and pairs of mates
+        for (std::size_t i = 0; i < twins.twins.size(); i++) {
+            mate = twins.inflate_cnodes(twins.twins[i]);
+            // Get size distribution
+            for (std::size_t he_idx = 0; he_idx < mate.size(); he_idx++) {
+                size_dist[mate[he_idx].size()-p.min_k] += 1;
+            }
+
+            if (!twins_counts.contains(size_dist)) {
+                twins_counts[size_dist] = std::vector<int> {1, 0};
+            } else {
+                twins_counts[size_dist][0] += 1;
+            }
+
+            // Reset size distribution to 0
+            for (std::size_t j = 0; j < size_dist.size(); j++) { size_dist[j] = 0; }
+        }
+        num_cliques = twins.fact.num_clique_nodes;
+        num_edges = twins.fact.num_edge_nodes;
+        num_mate_pairs = static_cast<int> (twins.mates.size());
+    } else {
+        {
+            tbb::spin_mutex::scoped_lock lock(WriteMutex);
+            std::cout << "WARNING: Infeasible sample detected. Check min-k and max-k. Writing 0s for this sample." << std::endl;
         }
     }
+
     // Create local scope for mutex
     {
         // Get mutex lock
