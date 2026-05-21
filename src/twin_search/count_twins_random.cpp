@@ -110,7 +110,7 @@ bool one_sample_write(Params &p, std::ofstream &outfile) {
         std::cout << "WARNING: Constructed hypergraph with wrong number of nodes or hyperedges. Returning false." << std::endl;
         std::cout << "Nodes: " << h.n << " Hyperedges: " << h.m << std::endl;
         }
-        return false
+        return false;
     }
 
     // Compute twins and mates
