@@ -67,13 +67,19 @@ class TwinSearch {
         // A simple struct to store a partial hypergraph
         // and its projection remainder to use with the stack.
         struct StackItem;
+
+        // Cheap isomorphism invariant used to avoid calling
+        // boost::vf2_graph_iso on pairs that cannot possibly be isomorphic.
+        struct GraphFingerprint;
+        static GraphFingerprint compute_fingerprint(const UndirectedGraph &g);
+        static std::vector<GraphFingerprint> compute_fingerprints(const std::vector<UndirectedGraph> &graphs);
+        static bool fingerprints_match(const GraphFingerprint &a, const GraphFingerprint &b);
         //struct ParaReturn;
         std::vector<std::size_t> edge_execution_order;
-        void process_item(std::vector<StackItem> &stack, StackItem &s, std::vector<UndirectedGraph> &bipartites, std::vector<UndirectedGraph > &line_graphs, bool filter_isomorphic);
+        void process_item(std::vector<StackItem> &stack, StackItem &s, std::vector<UndirectedGraph> &bipartites, std::vector<GraphFingerprint> &fingerprints, std::vector<UndirectedGraph > &line_graphs, bool filter_isomorphic);
         void parallel_process_item(StackItem &s, tbb::concurrent_vector<std::vector<int> >&, std::vector<StackItem> &tmp_stack);
         void compute_bipartite_and_linegraph(std::vector<UndirectedGraph> &bipartites, std::vector<UndirectedGraph > &line_graphs, const int i, std::vector<int> &hypergraph);
-        bool is_isomorphic(const std::vector<UndirectedGraph> &bipartites, const int cand_idx);
-        std::vector<std::vector<int> > get_combinations(int enode_id, int weight, const StackItem &s);
+        bool is_isomorphic(const std::vector<UndirectedGraph> &bipartites, const std::vector<GraphFingerprint> &fingerprints, const int cand_idx);
         void add_to_stack(const StackItem &curr, const std::vector<int> &comb, std::vector<StackItem> &stack);
         std::vector<int> get_filtered_neighbors(const StackItem &s, int enode_id);
         int choose_edge(const StackItem &s);

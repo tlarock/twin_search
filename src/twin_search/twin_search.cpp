@@ -30,6 +30,46 @@ struct TwinSearch::StackItem {
     std::size_t edge_execution_index;
 };
 
+// Cheap isomorphism invariant: (|V|, |E|, sorted degree sequence). Isomorphic
+// graphs necessarily agree on all three, so testing this before calling
+// boost::vf2_graph_iso can only skip pairs that vf2 would have rejected - the
+// set of reported pairs is unchanged. This matters because the pairwise loops
+// below are O(T^2) in the number of twins and vf2 is expensive per call (it
+// re-sorts vertices by multiplicity every time).
+struct TwinSearch::GraphFingerprint {
+    std::size_t num_vertices = 0;
+    std::size_t num_edges = 0;
+    std::vector<std::size_t> degrees;   // ascending
+};
+
+bool TwinSearch::fingerprints_match(const GraphFingerprint &a, const GraphFingerprint &b) {
+    return a.num_vertices == b.num_vertices
+        && a.num_edges == b.num_edges
+        && a.degrees == b.degrees;
+}
+
+TwinSearch::GraphFingerprint TwinSearch::compute_fingerprint(const UndirectedGraph &g) {
+    GraphFingerprint fp;
+    fp.num_vertices = boost::num_vertices(g);
+    fp.num_edges = boost::num_edges(g);
+    fp.degrees.reserve(fp.num_vertices);
+    for (std::size_t v = 0; v < fp.num_vertices; ++v)
+        fp.degrees.push_back(boost::degree(v, g));
+    std::sort(fp.degrees.begin(), fp.degrees.end());
+    return fp;
+}
+
+// Deliberately serial: this is O(T * V log V) against the O(T^2) vf2 work it
+// saves, so parallelising it buys nothing measurable, and it keeps one more
+// nested TBB region out of a call path that is already nested two deep.
+std::vector<TwinSearch::GraphFingerprint> TwinSearch::compute_fingerprints(const std::vector<UndirectedGraph> &graphs) {
+    std::vector<GraphFingerprint> fps;
+    fps.reserve(graphs.size());
+    for (const UndirectedGraph &g : graphs)
+        fps.push_back(compute_fingerprint(g));
+    return fps;
+}
+
 // Searches for all hypergraphs that correspond to this projected adjacency
 // matrix, constraining the minimum and maximum hyperedge size. Also compares
 // each pair of hypergraphs to check whether their line graphs are equivalent,
@@ -116,7 +156,7 @@ bool TwinSearch::equivalent_lg(std::vector<ublas::matrix<int> > &line_graphs, co
     return true;
 }
 
-void TwinSearch::process_item(std::vector<StackItem> &stack, StackItem &s, std::vector<UndirectedGraph> &bipartites, std::vector<UndirectedGraph> &line_graphs, bool filter_isomorphic) {
+void TwinSearch::process_item(std::vector<StackItem> &stack, StackItem &s, std::vector<UndirectedGraph> &bipartites, std::vector<GraphFingerprint> &fingerprints, std::vector<UndirectedGraph> &line_graphs, bool filter_isomorphic) {
     // check if the sum of the modified projection is 0
     int proj_rem_sum = matsum(s.proj_rem);
     if (proj_rem_sum < 1) {
@@ -126,6 +166,10 @@ void TwinSearch::process_item(std::vector<StackItem> &stack, StackItem &s, std::
         // Compute the bipartite representation and the incidence matrix for
         // s.hypergraph to use for comparisons
         compute_bipartite_and_linegraph(bipartites, line_graphs, -1, s.hypergraph);
+
+        // Kept index-aligned with bipartites unconditionally, so the two can
+        // never drift apart.
+        fingerprints.push_back(compute_fingerprint(bipartites.back()));
 
         // If required, decide whether to put this hypergraph into
         // filtered_twins or not.
@@ -138,7 +182,7 @@ void TwinSearch::process_item(std::vector<StackItem> &stack, StackItem &s, std::
         if (filter_isomorphic) {
             // if the filtered vector is empty *OR*
             // the current hypergraph is not isomorphic to anything in bipartites
-            if (filtered_twins.empty() || !is_isomorphic(bipartites, bipartites.size()-1)) {
+            if (filtered_twins.empty() || !is_isomorphic(bipartites, fingerprints, bipartites.size()-1)) {
                 // Add the index of this twin to filtered_twins
                 filtered_twins.push_back(twins.size()-1);
             }
@@ -163,9 +207,11 @@ void TwinSearch::process_item(std::vector<StackItem> &stack, StackItem &s, std::
             enode_id = edge_execution_order[s.edge_execution_index];
             e = fact.node_map[enode_id];
         }
-        std::vector<std::vector<int> > comb_vect = get_combinations(enode_id, s.proj_rem(e[0], e[1]), s);
-        for (std::vector<int> comb : comb_vect)
-            add_to_stack(s, comb, stack);
+        // Streamed rather than materialised: the old form built a vector of
+        // every combination and then copied each one again by value.
+        std::vector<int> neighbors_vect = get_filtered_neighbors(s, enode_id);
+        for_each_combination(neighbors_vect, s.proj_rem(e[0], e[1]),
+            [&](const std::vector<int> &comb) { add_to_stack(s, comb, stack); });
     }
 }
 
@@ -178,6 +224,7 @@ void TwinSearch::search(bool filter_isomorphic) {
     }
     // Initialize container for bipartite representations
     std::vector<UndirectedGraph> bipartites;
+    std::vector<GraphFingerprint> fingerprints;
     std::vector<UndirectedGraph> line_graphs;
 
 
@@ -191,7 +238,7 @@ void TwinSearch::search(bool filter_isomorphic) {
     // The first stackitem is always an empty hypergraph and the
     // ProjectedGraph.proj_mat matrix from the input
     StackItem s(std::vector<int> (0), proj.proj_mat, 0);
-    process_item(stack, s, bipartites, line_graphs, filter_isomorphic);
+    process_item(stack, s, bipartites, fingerprints, line_graphs, filter_isomorphic);
 
     // Stores the sum of StackItem.proj_rem to check
     // whether we have satisfied every edge
@@ -199,7 +246,7 @@ void TwinSearch::search(bool filter_isomorphic) {
         // pop an item off the stack
         s = stack.back();
         stack.pop_back();
-        process_item(stack, s, bipartites, line_graphs, filter_isomorphic);
+        process_item(stack, s, bipartites, fingerprints, line_graphs, filter_isomorphic);
     }
 
     mates = run_mates_tests_parallel(line_graphs);
@@ -343,24 +390,6 @@ void TwinSearch::add_to_stack(const TwinSearch::StackItem &curr, const std::vect
 }
 
 
-// Constructs combinations(cnode_neighbors, weight) for enode_id.
-//
-// NOTE: This used discreture::combinations, which is NOT thread safe: its
-// Combinations(n, k) constructor calls discreture::binomial, which memoizes
-// into an unsynchronized function-local static and grows it with resize().
-// This function runs on every worker thread at every node of the search tree,
-// so that memo table was a shared mutable static in a parallel hot path -
-// confirmed by ThreadSanitizer, and the cause of intermittent segfaults.
-// combinations_of() in combinations.hpp is a drop-in replacement that holds no
-// state at all and emits combinations in the same order.
-std::vector<std::vector<int> > TwinSearch::get_combinations(int enode_id, int weight, const TwinSearch::StackItem &s) {
-    std::vector<int> neighbors_vect = get_filtered_neighbors(s, enode_id);
-    if (neighbors_vect.empty())
-        return std::vector<std::vector<int> >(0);
-
-    return combinations_of(neighbors_vect, weight);
-}
-
 // Callback function/struct for vf2_sub_graph_iso
 // NOTE: Found via SO.
 // TODO: Add proper tests of this callback
@@ -387,9 +416,9 @@ struct my_callback {
 //  graphs. Proceed with caution.
 //
 // Returns true if isomorphic to an existing twin isomorphism class, false otherwise.
-bool TwinSearch::is_isomorphic(const std::vector<UndirectedGraph> &bipartites, const int cand_idx) {
+bool TwinSearch::is_isomorphic(const std::vector<UndirectedGraph> &bipartites, const std::vector<GraphFingerprint> &fingerprints, const int cand_idx) {
     for (int i : filtered_twins) {
-        if (i != cand_idx) {
+        if (i != cand_idx && fingerprints_match(fingerprints[i], fingerprints[cand_idx])) {
             my_callback<UndirectedGraph, UndirectedGraph> my_callback(bipartites[i], bipartites[cand_idx]);
             if ( boost::vf2_graph_iso(bipartites[i], bipartites[cand_idx], my_callback) )
                 return true;
@@ -612,10 +641,10 @@ void TwinSearch::parallel_process_item(StackItem &s, tbb::concurrent_vector<std:
             enode_id = edge_execution_order[s.edge_execution_index];
             e = fact.node_map[enode_id];
         }
-        std::vector<std::vector<int> > comb_vect = get_combinations(enode_id, s.proj_rem(e[0], e[1]), s);
-        for (std::vector<int> comb : comb_vect) {
-            add_to_stack(s, comb, tmp_stack);
-        }
+        // Streamed rather than materialised: see the note in process_item.
+        std::vector<int> neighbors_vect = get_filtered_neighbors(s, enode_id);
+        for_each_combination(neighbors_vect, s.proj_rem(e[0], e[1]),
+            [&](const std::vector<int> &comb) { add_to_stack(s, comb, tmp_stack); });
     }
 }
 
@@ -632,12 +661,14 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
     if (bipartites.size() < 2)
         return to_filter;
 
+    std::vector<GraphFingerprint> fps = compute_fingerprints(bipartites);
+
     for(std::size_t i = 0; i < bipartites.size()-1; i++) {
             if(to_filter[i] > 0) {
                 continue;
             }
         tbb::parallel_for(std::size_t(i+1), bipartites.size(), [&](std::size_t j){
-            if (to_filter[j] < 1) {
+            if (to_filter[j] < 1 && fingerprints_match(fps[i], fps[j])) {
                 my_callback<UndirectedGraph, UndirectedGraph> mc(bipartites[i], bipartites[j]);
                 if ( boost::vf2_graph_iso(bipartites[i], bipartites[j], mc) ) {
                     to_filter[j] += 1;
@@ -665,9 +696,18 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
     if (line_graphs.size() < 2)
         return std::vector<std::vector<int> >(0);
 
+    std::vector<GraphFingerprint> fps = compute_fingerprints(line_graphs);
+
     for(std::size_t i = 0; i < line_graphs.size()-1; i++) {
         tbb::parallel_for(std::size_t(i+1), line_graphs.size(), [&](std::size_t j){
-                thread_local my_callback<UndirectedGraph, UndirectedGraph> mc(line_graphs[i], line_graphs[j]);
+                if (!fingerprints_match(fps[i], fps[j]))
+                    return;
+                // NOTE: mc must be a plain local. It was previously
+                // thread_local, which constructs it once per thread and then
+                // leaves it holding references to whichever two graphs that
+                // thread happened to see first. Harmless only because the
+                // callback never reads them.
+                my_callback<UndirectedGraph, UndirectedGraph> mc(line_graphs[i], line_graphs[j]);
                 if ( boost::vf2_graph_iso(line_graphs[i], line_graphs[j], mc) ) {
                     // If line graphs are isomorphic, i and j are a pair of mates
                     mate_pairs.push_back( std::vector<int> {static_cast<int> (i), static_cast<int> (j)});

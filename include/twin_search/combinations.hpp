@@ -14,7 +14,7 @@
 //
 // and grows it with B.resize() (Sequences.hpp:135). C++ guarantees thread-safe
 // *initialization* of a function-local static, not thread-safe *mutation*.
-// TwinSearch::get_combinations() runs at every node of the search tree on every
+// The TwinSearch search calls this at every node of the search tree on every
 // worker thread, so two threads can resize and read that table concurrently.
 // Because resize() to a smaller size destroys inner vectors another thread is
 // still reading, this shows up as heap-use-after-free under AddressSanitizer
