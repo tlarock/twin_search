@@ -69,3 +69,28 @@ TEST(FactorGraphTest, MinK2) {
         EXPECT_EQ(neighbors.size(), boost_neighbors.size());
     }
 }
+
+// FactorGraph::num_edge_nodes comes from ProjectedGraph::num_edges, but the
+// edge-node vertices are counted by a separate loop. The two must agree, or
+// the search is handed edge-node ids that are not in node_map. This is the
+// invariant that a repeated node inside a hyperedge used to break.
+TEST(FactorGraphTest, EdgeNodeCountMatchesProjectionEdgeCount) {
+    std::vector<std::vector<int> > with_repeat = {{0,1,2},{1,2,3},{0,3,3},{0,2,3}};
+    Hypergraph h(with_repeat);
+    ProjectedGraph proj(h);
+    FactorGraph fact(proj, 2, 4);
+
+    int true_edges = 0;
+    for (std::size_t i = 0; i + 1 < proj.proj_mat.size1(); i++)
+        for (std::size_t j = i + 1; j < proj.proj_mat.size2(); j++)
+            if (proj.proj_mat(i, j) > 0) true_edges++;
+
+    EXPECT_EQ(fact.num_edge_nodes, true_edges);
+
+    // Every edge-node id the search will iterate over must already be present,
+    // so that .at() never throws and operator[] would never have inserted.
+    for (int eid = 0; eid < fact.num_edge_nodes; eid++) {
+        ASSERT_TRUE(fact.node_map.contains(eid)) << "missing edge-node " << eid;
+        EXPECT_EQ(fact.node_map.at(eid).size(), 2u);
+    }
+}

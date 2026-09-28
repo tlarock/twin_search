@@ -1,5 +1,8 @@
 #include "factor_graph.hpp"
 
+#include <stdexcept>
+#include <format>
+
 // FactorGraph constructor from ProjectedGraph. Uses proj
 // to compute all cliques between min_k and max_k, then constructs 
 // the factor graph from those cliques.
@@ -18,19 +21,36 @@ FactorGraph::FactorGraph(ProjectedGraph & proj, int min_k_, int max_k_){
 
     // edge-node ids will run from 0,...,n-1
 	int enode_idx = 0;
+	int enodes_added = 0;
 	// pre-load edge-nodes
-	for (std::size_t i = 0; i < proj.proj_mat.size1()-1; i++) {
+	// NOTE: guard the loop bound; size1() == 0 would underflow size_t here.
+	for (std::size_t i = 0; i + 1 < proj.proj_mat.size1(); i++) {
 		for (std::size_t j = i+1; j < proj.proj_mat.size2(); j++) {
 			if (proj.proj_mat(i,j) > 0 || proj.proj_mat(j,i) > 0) {
 					enode_idx = boost::add_vertex(g);
 					std::vector<int> e {static_cast <int> (i), static_cast <int> (j)};
 					node_map[enode_idx] = e;
 					rev_node_map[e] = enode_idx;
+					enodes_added += 1;
 			}
 		}
 	}
-	if (enode_idx != proj.num_edges-1) {
-        std::cout << "Something is wrong. enode_idx: " << enode_idx << " != proj.num_edges-1: " << proj.num_edges-1 << std::endl;
+	// num_edge_nodes is taken from proj.num_edges but the vertices above are
+	// counted independently, so the two must agree exactly. If they do not,
+	// default_edge_execution_order() will hand the search edge-node ids that
+	// are absent from node_map, and the parallel search would then corrupt
+	// node_map looking them up. Fail here instead: a mismatch means the input
+	// projection is inconsistent, not that the caller should carry on.
+	//
+	// NOTE: the previous check compared proj.num_edges-1 against enode_idx,
+	// the last vertex id assigned, which is 0 when no vertices were added at
+	// all - so it silently passed the case it most needed to catch.
+	if (enodes_added != proj.num_edges) {
+        throw std::runtime_error(std::format(
+            "FactorGraph: projection is inconsistent - built {} edge-nodes but "
+            "ProjectedGraph::num_edges is {}. This usually means a hyperedge "
+            "contained a repeated node, which Hypergraph should have removed.",
+            enodes_added, proj.num_edges));
 	}
     num_edge_nodes = proj.num_edges;
 

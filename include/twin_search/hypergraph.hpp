@@ -38,6 +38,21 @@ class Hypergraph {
         template<typename T>
         Hypergraph(const T &input_hyperedges, int n_, int m_);
         
+        // Stores input hyperedge `he` at index `he_idx`, sorted and with any
+        // repeated nodes removed, recording its size and node memberships and
+        // adding its nodes to `nodes`.
+        //
+        // De-duplication is load bearing, not tidiness. The search is defined
+        // for simple hypergraphs, in which a node occurs at most once per
+        // hyperedge. A repeated node makes ProjectedGraph::num_edges count a
+        // diagonal entry as though it were a pairwise edge, so
+        // FactorGraph::num_edge_nodes ends up larger than the number of
+        // edge-nodes actually created. The search then looks up an edge-node id
+        // that is not in FactorGraph::node_map - concurrently, from every
+        // worker thread - and std::map::operator[] inserts it, corrupting the
+        // map. Dropping repeats at construction makes that unreachable.
+        void store_hyperedge(int he_idx, const std::vector<int> &he, std::set<int> &nodes);
+
         UndirectedGraph get_bipartite();
         ublas::matrix<int> get_incidence_matrix();
         UndirectedGraph get_line_graph();
@@ -71,14 +86,7 @@ Hypergraph::Hypergraph(const T &input_hyperedges) {
         //for (std::vector<int> he : input_hyperedges)
         for(const auto& he : input_hyperedges)
         {
-            Hypergraph::hyperedges[he_idx] = he;
-            sort(hyperedges[he_idx].begin(), hyperedges[he_idx].end());
-            Hypergraph::hyperedge_sizes[he_idx] = he.size();
-            for (int node_id : he)
-            {
-                Hypergraph::node_memberships[node_id].push_back(he_idx);
-                nodes.insert(node_id);
-            }
+            store_hyperedge(he_idx, he, nodes);
             he_idx += 1;
         }
 
@@ -150,13 +158,7 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_) {
         int he_idx = 0;
         //for (std::vector<int> he : input_hyperedges)
         for(const auto& he : input_hyperedges) {
-            Hypergraph::hyperedges[he_idx] = he;
-            sort(hyperedges[he_idx].begin(), hyperedges[he_idx].end());
-            Hypergraph::hyperedge_sizes[he_idx] = he.size();
-            for (int node_id : he) {
-                Hypergraph::node_memberships[node_id].push_back(he_idx);
-                nodes.insert(node_id);
-            }
+            store_hyperedge(he_idx, he, nodes);
             he_idx += 1;
         }
 
@@ -205,13 +207,7 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_, int m_) {
         int he_idx = 0;
         //for (std::vector<int> he : input_hyperedges)
         for(const auto& he : input_hyperedges) {
-            Hypergraph::hyperedges[he_idx] = he;
-            sort(hyperedges[he_idx].begin(), hyperedges[he_idx].end());
-            Hypergraph::hyperedge_sizes[he_idx] = he.size();
-            for (int node_id : he) {
-                Hypergraph::node_memberships[node_id].push_back(he_idx);
-                nodes.insert(node_id);
-            }
+            store_hyperedge(he_idx, he, nodes);
             he_idx += 1;
         }
 

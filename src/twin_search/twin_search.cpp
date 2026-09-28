@@ -130,7 +130,7 @@ bool TwinSearch::test_feasibility() {
     std::vector<int> edge;
     for(int eid = 0; eid < fact.num_edge_nodes; eid++) {
 	    degree = fact.node_degree(eid);
-        edge = fact.node_map[eid];
+        edge = fact.node_map.at(eid);
         weight = proj.proj_mat(edge[0], edge[1]);
         // Degree must be larger than or equal to weight
         if (degree == 0 || degree < weight)
@@ -198,14 +198,14 @@ void TwinSearch::process_item(std::vector<StackItem> &stack, StackItem &s, std::
 
         // Pop the next edge of the execution order vector
         int enode_id = edge_execution_order[s.edge_execution_index];	
-        std::vector<int> e = fact.node_map[enode_id];
+        std::vector<int> e = fact.node_map.at(enode_id);
         // skip to the next unsatisfied edge
         while (s.proj_rem(e[0], e[1]) < 1) {
             s.edge_execution_index++;
             if (s.edge_execution_index >= edge_execution_order.size())
                 return;
             enode_id = edge_execution_order[s.edge_execution_index];
-            e = fact.node_map[enode_id];
+            e = fact.node_map.at(enode_id);
         }
         // Streamed rather than materialised: the old form built a vector of
         // every combination and then copied each one again by value.
@@ -315,7 +315,7 @@ std::vector<std::size_t> TwinSearch::compute_edge_execution_order() {
     // loop over non-zero entries in s.proj_rem
     // loop over edge ids
     for (int enode_id = 0; enode_id < fact.num_edge_nodes; enode_id++) {
-        e = fact.node_map[enode_id];
+        e = fact.node_map.at(enode_id);
         i = e[0];
         j = e[1];
         neighbors_vect = fact.get_vertex_neighbors(enode_id);
@@ -632,14 +632,14 @@ void TwinSearch::parallel_process_item(StackItem &s, tbb::concurrent_vector<std:
             return;
 
         int enode_id = edge_execution_order[s.edge_execution_index];
-        std::vector<int> e = fact.node_map[enode_id];
+        std::vector<int> e = fact.node_map.at(enode_id);
         // skip to the next unsatisfied edge
         while (s.proj_rem(e[0], e[1]) < 1) {
             s.edge_execution_index++;
             if (s.edge_execution_index >= edge_execution_order.size())
                 return;
             enode_id = edge_execution_order[s.edge_execution_index];
-            e = fact.node_map[enode_id];
+            e = fact.node_map.at(enode_id);
         }
         // Streamed rather than materialised: see the note in process_item.
         std::vector<int> neighbors_vect = get_filtered_neighbors(s, enode_id);
@@ -736,7 +736,7 @@ long double TwinSearch::compute_width_product(ProjectedGraph &proj, FactorGraph 
     for(int eid = 0; eid < fact.num_edge_nodes; eid++) {
         // Get num neighbors
         degree = fact.node_degree(eid);
-        edge = fact.node_map[eid];
+        edge = fact.node_map.at(eid);
         weight = proj.proj_mat(edge[0], edge[1]);
         if (prod < 1)
             prod = binom(degree, weight);
@@ -762,7 +762,7 @@ double TwinSearch::compute_log_width_product(ProjectedGraph &proj, FactorGraph &
     for(int eid = 0; eid < fact.num_edge_nodes; eid++) {
         // Get num neighbors
         degree = fact.node_degree(eid);
-        edge = fact.node_map[eid];
+        edge = fact.node_map.at(eid);
         weight = proj.proj_mat(edge[0], edge[1]);
         // TODO: There could be overflow/imprecision in binom
         logsum += std::log10(binom(degree, weight));

@@ -167,3 +167,51 @@ TEST(HypergraphTest, RemapTest) {
             EXPECT_TRUE(h.node_memberships.contains(u));
     }
 }
+
+// A node repeated inside a hyperedge is not a valid simple hypergraph, and the
+// search is not defined for one. Hypergraph drops the repeats at construction
+// so that downstream invariants hold - in particular so that
+// ProjectedGraph::num_edges keeps matching the number of edge-nodes
+// FactorGraph builds. Without this, the parallel search looks up an edge-node
+// id that is absent from FactorGraph::node_map, and std::map::operator[]
+// inserts it concurrently from every worker thread.
+TEST(HypergraphTest, RepeatedNodesInHyperedgeAreDropped) {
+    std::vector<std::vector<int> > input = {{0,1,2},{1,2,3},{0,3,3},{0,2,3}};
+    Hypergraph h(input);
+
+    EXPECT_EQ(h.m, 4);
+    EXPECT_EQ(h.n, 4);
+
+    // {0,3,3} must be stored as {0,3}
+    EXPECT_EQ(h.hyperedges[2], (std::vector<int>{0,3}));
+    EXPECT_EQ(h.hyperedge_sizes[2], 2);
+
+    // node 3 must be recorded as a member of hyperedge 2 exactly once
+    int count = 0;
+    for (int he_idx : h.node_memberships[3])
+        if (he_idx == 2) count++;
+    EXPECT_EQ(count, 1);
+}
+
+TEST(HypergraphTest, RepeatedNodesDroppedInSizedConstructors) {
+    std::vector<std::vector<int> > input = {{0,1,1},{1,2,2,2}};
+
+    Hypergraph h2(input, 3);
+    EXPECT_EQ(h2.hyperedges[0], (std::vector<int>{0,1}));
+    EXPECT_EQ(h2.hyperedges[1], (std::vector<int>{1,2}));
+    EXPECT_EQ(h2.hyperedge_sizes[0], 2);
+    EXPECT_EQ(h2.hyperedge_sizes[1], 2);
+
+    Hypergraph h3(input, 3, 2);
+    EXPECT_EQ(h3.hyperedges[0], (std::vector<int>{0,1}));
+    EXPECT_EQ(h3.hyperedges[1], (std::vector<int>{1,2}));
+}
+
+// A hyperedge of all-identical nodes collapses to a singleton, which
+// contributes nothing off-diagonal. It must not be counted as an edge.
+TEST(HypergraphTest, AllRepeatedNodesCollapseToSingleton) {
+    std::vector<std::vector<int> > input = {{0,1},{2,2,2}};
+    Hypergraph h(input);
+    EXPECT_EQ(h.hyperedges[1], (std::vector<int>{2}));
+    EXPECT_EQ(h.hyperedge_sizes[1], 1);
+}

@@ -71,3 +71,21 @@ ublas::matrix<int> Hypergraph::get_lg_mat() {
     ublas::matrix<int> lg_mat = ublas::prod(incidence, ublas::trans(incidence));
     return lg_mat;
 }
+
+// Stores input hyperedge `he` at index `he_idx`, sorted and with any repeated
+// nodes removed. See the declaration in hypergraph.hpp for why removing
+// repeats is required rather than merely tidy.
+void Hypergraph::store_hyperedge(int he_idx, const std::vector<int> &he, std::set<int> &nodes) {
+    std::vector<int> &stored = Hypergraph::hyperedges[he_idx];
+    stored.assign(he.begin(), he.end());
+    sort(stored.begin(), stored.end());
+    stored.erase(std::unique(stored.begin(), stored.end()), stored.end());
+
+    // Size and memberships must come from the de-duplicated hyperedge, not the
+    // input, or a repeated node would still be counted twice.
+    Hypergraph::hyperedge_sizes[he_idx] = static_cast<int>(stored.size());
+    for (int node_id : stored) {
+        Hypergraph::node_memberships[node_id].push_back(he_idx);
+        nodes.insert(node_id);
+    }
+}
