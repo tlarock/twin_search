@@ -16,7 +16,8 @@ target_link_libraries(test_random_hypergraph_generators PRIVATE GTest::gtest_mai
 add_executable(test_factor_graph test_factor_graph.cpp $<TARGET_OBJECTS:objlib>)
 target_link_libraries(test_factor_graph PRIVATE GTest::gtest_main)
 
-# Pins combinations_of() to discreture::combinations(), so the thread-safe
+# Pins combinations_of() against reference data generated from
+# discreture::combinations (see scripts/gen_golden.cpp), so the thread-safe
 # replacement used by TwinSearch::get_combinations cannot change search results.
 add_executable(test_combinations test_combinations.cpp $<TARGET_OBJECTS:objlib>)
 target_link_libraries(test_combinations PRIVATE GTest::gtest_main)

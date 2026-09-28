@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/numeric/ublas/matrix_sparse.hpp>
-#include <discreture.hpp>
 #include "hypergraph.hpp"
 #include "utils.hpp"
 

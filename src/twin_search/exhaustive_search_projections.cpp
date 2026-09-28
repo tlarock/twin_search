@@ -5,7 +5,6 @@
 #include <oneapi/tbb.h>
 #include <oneapi/tbb/task_arena.h>
 #include <oneapi/tbb/global_control.h>
-#include <discreture.hpp>
 
 #include "argparse/argparse.hpp"
 
@@ -13,6 +12,7 @@
 #include "factor_graph.hpp"
 #include "projected_graph.hpp"
 #include "twin_search.hpp"
+#include "combinations.hpp"
 #include "random_hypergraph_generators.hpp"
 #include "utils.hpp"
 
@@ -170,17 +170,14 @@ std::string construct_filename(int n,  int m, int k) {
 
 
 std::map<int, std::vector<int> > get_hyperedges(std::vector<int> nodes, int k) {
-    auto combs = discreture::combinations(nodes, k);
     std::map<int, std::vector<int> > all_hyperedges;
     int he_idx = 0;
-    for (auto&& comb : combs) {
-        std::vector<int> new_comb;
-        for (int c : comb)
-            new_comb.push_back(c);
+    for_each_combination(nodes, k, [&](const std::vector<int> &comb) {
+        std::vector<int> new_comb(comb);
         sort(new_comb.begin(), new_comb.end());
-        all_hyperedges[he_idx] = std::vector<int>(new_comb);
+        all_hyperedges[he_idx] = new_comb;
         he_idx += 1;
-    }
+    });
     return all_hyperedges;
 }
 
@@ -199,17 +196,17 @@ std::vector<ProjectedGraph> get_unique_projections(std::map<int, std::vector<int
     for(std::size_t i = 0; i < all_hyperedges.size(); i++)
         he_ids.push_back(static_cast <int> (i));
 
-    // Get all combinations of m hyperedges by id
-    // concretize into a vector
-    auto disc_combs = discreture::combinations(he_ids, m);
+    // Get all combinations of m hyperedges by id, concretized into a vector.
+    // Streamed rather than materialized as ids first, so only the expanded
+    // hypergraphs are held in memory.
     std::vector<std::vector<std::vector<int> > > combs;
-    for (std::size_t i = 0; i < disc_combs.size(); ++i) {
+    for_each_combination(he_ids, m, [&](const std::vector<int> &ids) {
         std::vector<std::vector<int> > new_hg;
-        for (auto&& c : disc_combs[i]) {
+        new_hg.reserve(ids.size());
+        for (int c : ids)
             new_hg.push_back(all_hyperedges[c]);
-        }
         combs.push_back(new_hg);
-    }
+    });
 
     // Fill all_projections with every projection
     std::vector<ProjectedGraph> all_projections(combs.size());

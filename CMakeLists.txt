@@ -62,9 +62,8 @@ set(Boost_USE_STATIC_RUNTIME OFF)
 include_directories(${Boost_INCLUDE_DIRS})
 include_directories("./include/twin_search/")
 
-# NOTE: These are not managed by conan so must be included directly
+# NOTE: This is not managed by conan so must be included directly
 include_directories("../argparse/include")
-include_directories("../discreture/include")
 
 # Add the src directory and subsequent CMakeLists
 add_subdirectory(src)

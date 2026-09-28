@@ -61,20 +61,21 @@ inline std::size_t num_combinations(int n, int k)
     return result;
 }
 
-// All k-subsets of `items`, in colexicographic order of the underlying
-// indices. Returns an empty vector when k < 0 or k > items.size(), matching
-// discreture's binomial(n, k) == 0 for those cases. k == 0 yields exactly one
-// (empty) combination, again matching discreture.
-template <typename T>
-std::vector<std::vector<T> > combinations_of(const std::vector<T> &items, int k)
+// Streaming form: invokes fn(const std::vector<T>&) once per k-subset of
+// `items`, in colexicographic order of the underlying indices, without
+// materialising the whole sequence. The vector passed to fn is reused between
+// calls, so copy it if you need to keep it.
+//
+// Returns without calling fn at all when k < 0 or k > items.size(), matching
+// discreture's binomial(n, k) == 0 for those cases. k == 0 calls fn exactly
+// once with an empty combination, again matching discreture.
+template <typename T, typename F>
+void for_each_combination(const std::vector<T> &items, int k, F &&fn)
 {
-    std::vector<std::vector<T> > out;
     const int n = static_cast<int>(items.size());
 
     if (k < 0 || k > n)
-        return out;
-
-    out.reserve(num_combinations(n, k));
+        return;
 
     // indices is the current combination, held as strictly increasing offsets
     // into items, starting at the colex-smallest {0, 1, ..., k-1}.
@@ -82,12 +83,12 @@ std::vector<std::vector<T> > combinations_of(const std::vector<T> &items, int k)
     for (int i = 0; i < k; i++)
         indices[i] = i;
 
+    std::vector<T> comb(static_cast<std::size_t>(k));
+
     while (true) {
-        std::vector<T> comb;
-        comb.reserve(static_cast<std::size_t>(k));
         for (int i = 0; i < k; i++)
-            comb.push_back(items[indices[i]]);
-        out.push_back(std::move(comb));
+            comb[i] = items[indices[i]];
+        fn(const_cast<const std::vector<T> &>(comb));
 
         // Colex successor: find the LEFTMOST index that can be incremented
         // without colliding with its right-hand neighbour (or with n, for the
@@ -108,7 +109,19 @@ std::vector<std::vector<T> > combinations_of(const std::vector<T> &items, int k)
         for (int t = 0; t < j; t++)
             indices[t] = t;
     }
+}
 
+// All k-subsets of `items`, in colexicographic order of the underlying
+// indices, materialised into a vector. Same contract as
+// for_each_combination above; prefer that one when the caller only needs to
+// walk the sequence once, since it avoids holding every combination at once.
+template <typename T>
+std::vector<std::vector<T> > combinations_of(const std::vector<T> &items, int k)
+{
+    std::vector<std::vector<T> > out;
+    out.reserve(num_combinations(static_cast<int>(items.size()), k));
+    for_each_combination(items, k,
+        [&out](const std::vector<T> &c) { out.push_back(c); });
     return out;
 }
 
