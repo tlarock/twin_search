@@ -343,24 +343,22 @@ void TwinSearch::add_to_stack(const TwinSearch::StackItem &curr, const std::vect
 }
 
 
-// Uses the discretures library to construct combinations(cnode_neighbors, weight) for enode_id.
+// Constructs combinations(cnode_neighbors, weight) for enode_id.
+//
+// NOTE: This used discreture::combinations, which is NOT thread safe: its
+// Combinations(n, k) constructor calls discreture::binomial, which memoizes
+// into an unsynchronized function-local static and grows it with resize().
+// This function runs on every worker thread at every node of the search tree,
+// so that memo table was a shared mutable static in a parallel hot path -
+// confirmed by ThreadSanitizer, and the cause of intermittent segfaults.
+// combinations_of() in combinations.hpp is a drop-in replacement that holds no
+// state at all and emits combinations in the same order.
 std::vector<std::vector<int> > TwinSearch::get_combinations(int enode_id, int weight, const TwinSearch::StackItem &s) {
     std::vector<int> neighbors_vect = get_filtered_neighbors(s, enode_id);
-    std::vector<std::vector<int> > comb_vect(0);
-    if (neighbors_vect.size() > 0) {
-        // NOTE: discreture uses some rvalue magic that I don't fully understand,
-        // so I just push the combinations into an std::vector.
-        auto combs = discreture::combinations(neighbors_vect, weight);
-        for (auto&& comb : combs) {
-            std::vector<int> new_comb;
-            for (int c : comb) {
-                new_comb.push_back(c);
-            }
-            comb_vect.push_back(new_comb);
-        }
-    }
+    if (neighbors_vect.empty())
+        return std::vector<std::vector<int> >(0);
 
-    return comb_vect;
+    return combinations_of(neighbors_vect, weight);
 }
 
 // Callback function/struct for vf2_sub_graph_iso

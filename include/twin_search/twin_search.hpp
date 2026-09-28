@@ -10,6 +10,7 @@
 #include <discreture.hpp>
 #include "projected_graph.hpp"
 #include "factor_graph.hpp"
+#include "combinations.hpp"
 
 namespace ublas=boost::numeric::ublas;
 
