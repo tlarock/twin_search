@@ -1,3 +1,6 @@
+#include <sstream>
+#include <functional>
+#include <string>
 #include "hypergraph.hpp"
 #include "test_hypergraphs.cpp"
 #include <gtest/gtest.h>
@@ -175,6 +178,16 @@ TEST(HypergraphTest, RemapTest) {
 // FactorGraph builds. Without this, the parallel search looks up an edge-node
 // id that is absent from FactorGraph::node_map, and std::map::operator[]
 // inserts it concurrently from every worker thread.
+// Captures whatever the constructor wrote to stderr, so the user-facing
+// warning is tested rather than assumed.
+static std::string capture_stderr(const std::function<void()> &fn) {
+    std::ostringstream buf;
+    std::streambuf *old = std::cerr.rdbuf(buf.rdbuf());
+    fn();
+    std::cerr.rdbuf(old);
+    return buf.str();
+}
+
 TEST(HypergraphTest, RepeatedNodesInHyperedgeAreDropped) {
     std::vector<std::vector<int> > input = {{0,1,2},{1,2,3},{0,3,3},{0,2,3}};
     Hypergraph h(input);
@@ -214,4 +227,62 @@ TEST(HypergraphTest, AllRepeatedNodesCollapseToSingleton) {
     Hypergraph h(input);
     EXPECT_EQ(h.hyperedges[1], (std::vector<int>{2}));
     EXPECT_EQ(h.hyperedge_sizes[1], 1);
+}
+
+// An exact repeat of an earlier hyperedge violates simplicity too: the
+// projection would require the same clique twice, while the factor graph holds
+// one clique-node per clique.
+TEST(HypergraphTest, DuplicateHyperedgesAreDropped) {
+    std::vector<std::vector<int> > input = {{0,1,2},{1,2,3},{0,1,2},{0,2,3}};
+    Hypergraph h(input);
+
+    EXPECT_EQ(h.m, 3);
+    EXPECT_EQ(h.hyperedges.size(), 3u);
+    EXPECT_EQ(h.hyperedges[0], (std::vector<int>{0,1,2}));
+    EXPECT_EQ(h.hyperedges[1], (std::vector<int>{1,2,3}));
+    EXPECT_EQ(h.hyperedges[2], (std::vector<int>{0,2,3}));
+
+    // node 0 belongs to the surviving {0,1,2} once, not twice
+    int count = 0;
+    for (int he_idx : h.node_memberships[0])
+        if (he_idx == 0) count++;
+    EXPECT_EQ(count, 1);
+}
+
+// De-duplicating nodes can itself create a duplicate hyperedge: {0,1,1}
+// becomes {0,1}. The duplicate check must therefore run after node repair.
+TEST(HypergraphTest, NodeRepairCanExposeADuplicateHyperedge) {
+    std::vector<std::vector<int> > input = {{0,1},{0,1,1}};
+    Hypergraph h(input);
+    EXPECT_EQ(h.m, 1);
+    EXPECT_EQ(h.hyperedges[0], (std::vector<int>{0,1}));
+}
+
+TEST(HypergraphTest, WarnsWhenRepeatedNodesAreRemoved) {
+    std::vector<std::vector<int> > input = {{0,1,2},{0,3,3}};
+    std::string msg = capture_stderr([&]{ Hypergraph h(input); });
+    EXPECT_NE(msg.find("has been modified"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("repeated node"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("1 hyperedge(s) contained"), std::string::npos) << msg;
+}
+
+TEST(HypergraphTest, WarnsWhenDuplicateHyperedgesAreDropped) {
+    std::vector<std::vector<int> > input = {{0,1,2},{0,1,2}};
+    std::string msg = capture_stderr([&]{ Hypergraph h(input); });
+    EXPECT_NE(msg.find("has been modified"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("duplicated an earlier hyperedge"), std::string::npos) << msg;
+}
+
+TEST(HypergraphTest, ReportsBothRepairsTogether) {
+    std::vector<std::vector<int> > input = {{0,1,2},{0,1,2},{0,3,3},{1,1,2}};
+    std::string msg = capture_stderr([&]{ Hypergraph h(input); });
+    EXPECT_NE(msg.find("2 hyperedge(s) contained a repeated node"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("1 hyperedge(s) duplicated"), std::string::npos) << msg;
+}
+
+// The common case must stay silent, or the warning is worthless.
+TEST(HypergraphTest, SaysNothingForWellFormedInput) {
+    std::vector<std::vector<int> > input = {{0,1,2},{1,2,3},{0,2,3}};
+    std::string msg = capture_stderr([&]{ Hypergraph h(input); });
+    EXPECT_EQ(msg, "") << msg;
 }

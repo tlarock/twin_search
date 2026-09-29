@@ -38,20 +38,47 @@ class Hypergraph {
         template<typename T>
         Hypergraph(const T &input_hyperedges, int n_, int m_);
         
+        // Counts of the ways an input hypergraph had to be altered to make it
+        // simple. Both are reported to the user, because the results that
+        // follow describe the repaired hypergraph rather than the input.
+        struct InputRepairs {
+            int hyperedges_with_repeated_nodes = 0;
+            int duplicate_hyperedges = 0;
+            bool any() const {
+                return hyperedges_with_repeated_nodes > 0 || duplicate_hyperedges > 0;
+            }
+        };
+
         // Stores input hyperedge `he` at index `he_idx`, sorted and with any
         // repeated nodes removed, recording its size and node memberships and
-        // adding its nodes to `nodes`.
+        // adding its nodes to `nodes`. `seen` accumulates the hyperedges stored
+        // so far so that an exact repeat can be dropped.
         //
-        // De-duplication is load bearing, not tidiness. The search is defined
-        // for simple hypergraphs, in which a node occurs at most once per
-        // hyperedge. A repeated node makes ProjectedGraph::num_edges count a
-        // diagonal entry as though it were a pairwise edge, so
+        // Returns true if the hyperedge was stored, false if it duplicated one
+        // already stored and was dropped - callers advance he_idx only when it
+        // returns true, so stored ids stay contiguous.
+        //
+        // Both repairs are load bearing, not tidiness. The search is defined
+        // for simple hypergraphs: a node occurs at most once per hyperedge, and
+        // no hyperedge repeats. A repeated node makes ProjectedGraph::num_edges
+        // count a diagonal entry as though it were a pairwise edge, so
         // FactorGraph::num_edge_nodes ends up larger than the number of
         // edge-nodes actually created. The search then looks up an edge-node id
         // that is not in FactorGraph::node_map - concurrently, from every
         // worker thread - and std::map::operator[] inserts it, corrupting the
-        // map. Dropping repeats at construction makes that unreachable.
-        void store_hyperedge(int he_idx, const std::vector<int> &he, std::set<int> &nodes);
+        // map. A repeated hyperedge is less violent but still wrong: the
+        // projection would demand a clique be used twice, while the factor
+        // graph holds one clique-node per clique, so the input hypergraph is
+        // not even a solution to its own projection.
+        bool store_hyperedge(int he_idx, const std::vector<int> &he, std::set<int> &nodes,
+                             std::set<std::vector<int> > &seen, InputRepairs &repairs);
+
+        // Emits a one-off summary to stderr when the input needed repairing.
+        // Deliberately a single summary per hypergraph rather than one line per
+        // hyperedge: these constructors run inside TBB loops over many samples,
+        // and a malformed file would otherwise produce a line per hyperedge per
+        // sample.
+        static void report_input_repairs(const InputRepairs &repairs);
 
         UndirectedGraph get_bipartite();
         ublas::matrix<int> get_incidence_matrix();
@@ -82,13 +109,18 @@ Hypergraph::Hypergraph(const T &input_hyperedges) {
     // Use default initializers if empty
     if (m > 0) {
         std::set<int> nodes;
+        std::set<std::vector<int> > seen;
+        InputRepairs repairs;
         int he_idx = 0;
         //for (std::vector<int> he : input_hyperedges)
         for(const auto& he : input_hyperedges)
         {
-            store_hyperedge(he_idx, he, nodes);
-            he_idx += 1;
+            if (store_hyperedge(he_idx, he, nodes, seen, repairs))
+                he_idx += 1;
         }
+        // Dropped duplicates mean fewer hyperedges than the input contained.
+        Hypergraph::m = he_idx;
+        report_input_repairs(repairs);
 
         Hypergraph::n = static_cast<int> (nodes.size());
 
@@ -155,12 +187,16 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_) {
     Hypergraph::m = input_hyperedges.size();
     if (m > 0) {
         std::set<int> nodes;
+        std::set<std::vector<int> > seen;
+        InputRepairs repairs;
         int he_idx = 0;
         //for (std::vector<int> he : input_hyperedges)
         for(const auto& he : input_hyperedges) {
-            store_hyperedge(he_idx, he, nodes);
-            he_idx += 1;
+            if (store_hyperedge(he_idx, he, nodes, seen, repairs))
+                he_idx += 1;
         }
+        Hypergraph::m = he_idx;
+        report_input_repairs(repairs);
 
         if (static_cast<int> (nodes.size()) > Hypergraph::n) {
             std::cout << "Number of nodes in the input " << nodes.size() << " is larger than input value for n " << n_ << ". Value of Hypergraph.n is actual number of nodes." << std::endl;
@@ -204,12 +240,26 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_, int m_) {
     // Use default initializers if empty
     if (input_hyperedges.size() > 0) {
         std::set<int> nodes;
+        std::set<std::vector<int> > seen;
+        InputRepairs repairs;
         int he_idx = 0;
         //for (std::vector<int> he : input_hyperedges)
         for(const auto& he : input_hyperedges) {
-            store_hyperedge(he_idx, he, nodes);
-            he_idx += 1;
+            if (store_hyperedge(he_idx, he, nodes, seen, repairs))
+                he_idx += 1;
         }
+
+        // This constructor pre-allocates m_ hyperedge slots. If duplicates were
+        // dropped, the trailing slots are stale rather than deliberately empty,
+        // so drop them and report the real count.
+        if (repairs.duplicate_hyperedges > 0) {
+            for (int eid = he_idx; eid < Hypergraph::m; eid++) {
+                Hypergraph::hyperedges.erase(eid);
+                Hypergraph::hyperedge_sizes.erase(eid);
+            }
+            Hypergraph::m = he_idx;
+        }
+        report_input_repairs(repairs);
 
 
         if (static_cast<int> (nodes.size()) > n_) {

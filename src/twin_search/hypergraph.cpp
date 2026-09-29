@@ -1,5 +1,7 @@
 #include "./hypergraph.hpp"
 
+#include <syncstream>
+
 
 // Default constructor
 Hypergraph::Hypergraph() {
@@ -73,19 +75,57 @@ ublas::matrix<int> Hypergraph::get_lg_mat() {
 }
 
 // Stores input hyperedge `he` at index `he_idx`, sorted and with any repeated
-// nodes removed. See the declaration in hypergraph.hpp for why removing
-// repeats is required rather than merely tidy.
-void Hypergraph::store_hyperedge(int he_idx, const std::vector<int> &he, std::set<int> &nodes) {
-    std::vector<int> &stored = Hypergraph::hyperedges[he_idx];
-    stored.assign(he.begin(), he.end());
-    sort(stored.begin(), stored.end());
-    stored.erase(std::unique(stored.begin(), stored.end()), stored.end());
+// nodes removed, dropping it entirely if an identical hyperedge was already
+// stored. See the declaration in hypergraph.hpp for why both repairs are
+// required rather than merely tidy.
+//
+// Returns true if the hyperedge was stored.
+bool Hypergraph::store_hyperedge(int he_idx, const std::vector<int> &he, std::set<int> &nodes,
+                                 std::set<std::vector<int> > &seen, InputRepairs &repairs) {
+    std::vector<int> cleaned(he.begin(), he.end());
+    sort(cleaned.begin(), cleaned.end());
 
-    // Size and memberships must come from the de-duplicated hyperedge, not the
-    // input, or a repeated node would still be counted twice.
-    Hypergraph::hyperedge_sizes[he_idx] = static_cast<int>(stored.size());
-    for (int node_id : stored) {
+    const std::size_t size_before = cleaned.size();
+    cleaned.erase(std::unique(cleaned.begin(), cleaned.end()), cleaned.end());
+    if (cleaned.size() != size_before)
+        repairs.hyperedges_with_repeated_nodes += 1;
+
+    // Checked after de-duplication: {0,1,1} and {0,1} are the same hyperedge
+    // once repeats are gone, so the collision only becomes visible here.
+    if (!seen.insert(cleaned).second) {
+        repairs.duplicate_hyperedges += 1;
+        return false;
+    }
+
+    Hypergraph::hyperedges[he_idx] = cleaned;
+
+    // Size and memberships must come from the cleaned hyperedge, not the input,
+    // or a repeated node would still be counted twice.
+    Hypergraph::hyperedge_sizes[he_idx] = static_cast<int>(cleaned.size());
+    for (int node_id : cleaned) {
         Hypergraph::node_memberships[node_id].push_back(he_idx);
         nodes.insert(node_id);
     }
+    return true;
+}
+
+// Tells the user their input was altered. Uses std::osyncstream so that the
+// message is not interleaved with other threads' output: these constructors
+// run inside TBB loops in count_twins_random and exhaustive_search_projections.
+void Hypergraph::report_input_repairs(const InputRepairs &repairs) {
+    if (!repairs.any())
+        return;
+
+    std::osyncstream out(std::cerr);
+    out << "Warning: input hypergraph was not simple and has been modified.\n";
+    if (repairs.hyperedges_with_repeated_nodes > 0) {
+        out << "  - " << repairs.hyperedges_with_repeated_nodes
+            << " hyperedge(s) contained a repeated node; the repeats were removed.\n";
+    }
+    if (repairs.duplicate_hyperedges > 0) {
+        out << "  - " << repairs.duplicate_hyperedges
+            << " hyperedge(s) duplicated an earlier hyperedge and were dropped.\n";
+    }
+    out << "  Results below describe the modified hypergraph, not the input as given."
+        << std::endl;
 }
