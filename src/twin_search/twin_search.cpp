@@ -208,6 +208,13 @@ void TwinSearch::process_item(std::vector<StackItem> &stack, StackItem &s, std::
 void TwinSearch::search(bool filter_isomorphic) {
     if (!feasible) {
         diagnostic() << "search() was called on infeasible projection. Returning without running search." << std::endl;
+        // The message said so but the return was missing, so an infeasible
+        // projection ran the whole search anyway. It could only ever produce an
+        // empty twin set - test_feasibility fails when some edge-node has fewer
+        // clique-neighbours than its weight, which no partial hypergraph can
+        // satisfy - so this is wasted work rather than a wrong answer, but the
+        // containers are already empty and the message was a lie.
+        return;
     }
     // Initialize container for bipartite representations
     std::vector<UndirectedGraph> bipartites;
@@ -541,6 +548,13 @@ void TwinSearch::print_twins(const std::vector<std::vector<int> > &twins){
 void TwinSearch::parallel_search(bool filter_isomorphic) {
     if (!feasible) {
         diagnostic() << "parallel_search() was called on infeasible projection. Returning without running search." << std::endl;
+        // The message said so but the return was missing, so an infeasible
+        // projection ran the whole search anyway. It could only ever produce an
+        // empty twin set - test_feasibility fails when some edge-node has fewer
+        // clique-neighbours than its weight, which no partial hypergraph can
+        // satisfy - so this is wasted work rather than a wrong answer, but the
+        // containers are already empty and the message was a lie.
+        return;
     }
     tbb::concurrent_vector<std::vector<int> > concurrent_twins;
     
