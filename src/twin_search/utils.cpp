@@ -56,6 +56,17 @@ unsigned int binom_exact(unsigned int n, unsigned int k) {
 // NOTE: I round the output here because it gives correct integer values after
 // casting if needed, otherwise casting tends to makve values off by 1.
 double binom(double n, double k) {
+    // Guard the degenerate cases before touching boost::math::beta. The
+    // identity below is C(n,k) = 1 / ((n+1) * B(n-k+1, k+1)), and beta() throws
+    // std::domain_error unless both arguments are strictly positive: n-k+1 <= 0
+    // whenever k > n, and k+1 <= 0 whenever k < -1. Choosing 0 rather than
+    // throwing matches the combinatorial meaning - there are no ways to choose
+    // more items than exist - and matches what callers already assume, e.g.
+    // compute_log_width_product multiplying widths over edges where some edge
+    // may be unsatisfiable.
+    if (k < 0 || n < 0 || k > n)
+        return 0.0;
+
     return std::round(1 / ((n + 1) * bmat::beta(n - k + 1, k + 1)) );
 }
 

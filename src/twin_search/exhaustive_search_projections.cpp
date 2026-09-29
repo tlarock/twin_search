@@ -82,8 +82,11 @@ bool one_sample_write(unsigned int n, unsigned int m, unsigned int min_k, unsign
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(dur);
     runtime = elapsed_ms.count();
 
-    // Use TwinSearch.fact to compute max width
-    max_log_width = std::round(twins.compute_log_width_product(proj, twins.fact));
+    // Use TwinSearch.fact to compute max width. Only meaningful when the search
+    // is feasible: otherwise the width product is 0 and its log is -inf, which
+    // cannot be converted to int.
+    if (twins.feasible)
+        max_log_width = std::round(twins.compute_log_width_product(proj, twins.fact));
 
     // Loop over the filtered twins and count the number that correspond to
     // each unique hyperedge size distribution

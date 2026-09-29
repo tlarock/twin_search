@@ -1,6 +1,7 @@
 #include "twin_search.hpp"
 #include <float.h>
 #include <algorithm>
+#include <limits>
 #include <boost/graph/vf2_sub_graph_iso.hpp>
 #include <oneapi/tbb.h>
 #include <oneapi/tbb/task_arena.h>
@@ -734,7 +735,13 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
 // the product of maximum widths of the TwinSearch tree over this factor graph.
 long double TwinSearch::compute_width_product(ProjectedGraph &proj, FactorGraph &fact) {
     // TODO I don't have a way of checking for overflow here
-    long double prod = 0.0;
+    // NOTE: starts at 1 and always multiplies. It previously started at 0 and
+    // used `if (prod < 1) prod = ...` to seed itself on the first edge, which
+    // also re-seeded rather than multiplied whenever a factor was 0 - so an
+    // unsatisfiable edge was silently discarded instead of zeroing the product.
+    // For a feasible projection every factor is at least 1, so this is
+    // equivalent there.
+    long double prod = 1.0;
     int degree;
     int weight;
     std::vector<int> edge;
@@ -743,10 +750,7 @@ long double TwinSearch::compute_width_product(ProjectedGraph &proj, FactorGraph 
         degree = fact.node_degree(eid);
         edge = fact.node_map.at(eid);
         weight = proj.proj_mat(edge[0], edge[1]);
-        if (prod < 1)
-            prod = binom(degree, weight);
-        else
-            prod *= binom(degree, weight);
+        prod *= binom(degree, weight);
     }
 
     return prod;
@@ -769,8 +773,18 @@ double TwinSearch::compute_log_width_product(ProjectedGraph &proj, FactorGraph &
         degree = fact.node_degree(eid);
         edge = fact.node_map.at(eid);
         weight = proj.proj_mat(edge[0], edge[1]);
+        const double width = binom(degree, weight);
+
+        // An edge with more required hyperedges than available clique-neighbours
+        // cannot be satisfied, so the whole product is 0 and its log is -inf.
+        // Returning immediately keeps that explicit: callers store this in an
+        // int, and converting an infinity to an integer type is undefined, so
+        // they must check feasibility first rather than discover it here.
+        if (width <= 0.0)
+            return -std::numeric_limits<double>::infinity();
+
         // TODO: There could be overflow/imprecision in binom
-        logsum += std::log10(binom(degree, weight));
+        logsum += std::log10(width);
     }
 
     return logsum;

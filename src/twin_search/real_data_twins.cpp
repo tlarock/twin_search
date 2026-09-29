@@ -119,7 +119,10 @@ void run_search(std::string filename, const Hypergraph &H, const int min_k, cons
     TwinSearch twins(proj, min_k, max_k, true, true, false, false);
     std::cout << "Done." << std::endl;
 
-    max_log_width = std::round(twins.compute_log_width_product(proj, twins.fact));
+    // Only meaningful when the search is feasible: otherwise the width product
+    // is 0 and its log is -inf, which cannot be converted to int.
+    if (twins.feasible)
+        max_log_width = std::round(twins.compute_log_width_product(proj, twins.fact));
     std::cout << "Running mate search on dataset. Exponent of the width product: " << max_log_width << std::endl;
     std::chrono::time_point start = time.now();
     twins.parallel_search(true);
