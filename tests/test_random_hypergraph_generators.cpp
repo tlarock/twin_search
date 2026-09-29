@@ -190,3 +190,61 @@ TEST(PowerLawSamplingTests, BasicProperties) {
         EXPECT_LE(deg, max_k);
     }
 }
+
+// Explicit-generator overloads exist so a run can be reproduced. The property
+// that matters is that the sampled hypergraph is a function of the generator
+// state alone - not of the calling thread, the thread count, or the order in
+// which samples happen to be scheduled. count_twins_random relies on this to
+// make --seed meaningful under tbb::parallel_for_each.
+TEST(SeedingTest, SameSeedGivesTheSameHypergraph) {
+    const int n = 8, m = 8, k = 3;
+    for (unsigned int seed : {1u, 42u, 7919u}) {
+        std::mt19937 a(seed), b(seed);
+        Hypergraph ha = sample_uniform_random(n, m, k, a);
+        Hypergraph hb = sample_uniform_random(n, m, k, b);
+        EXPECT_EQ(ha.hyperedges, hb.hyperedges) << "seed " << seed;
+        EXPECT_EQ(ha.n, hb.n);
+        EXPECT_EQ(ha.m, hb.m);
+    }
+}
+
+TEST(SeedingTest, DifferentSeedsGiveDifferentHypergraphs) {
+    const int n = 8, m = 8, k = 3;
+    std::mt19937 a(1u), b(2u);
+    Hypergraph ha = sample_uniform_random(n, m, k, a);
+    Hypergraph hb = sample_uniform_random(n, m, k, b);
+    // Not guaranteed in principle, but the space here is astronomically large.
+    EXPECT_NE(ha.hyperedges, hb.hyperedges);
+}
+
+// A generator passed by reference must be ADVANCED, so that consecutive draws
+// from one stream differ. If it were taken by value, every sample in a loop
+// would come out identical.
+TEST(SeedingTest, GeneratorIsAdvancedBetweenDraws) {
+    std::mt19937 gen(12345u);
+    Hypergraph first = sample_uniform_random(8, 8, 3, gen);
+    Hypergraph second = sample_uniform_random(8, 8, 3, gen);
+    EXPECT_NE(first.hyperedges, second.hyperedges);
+}
+
+// The configuration model draws twice - the degree sequence and the stub
+// matching - and both must come from the caller's generator, or seeding only
+// half determines the result.
+TEST(SeedingTest, ConfigurationModelIsFullySeeded) {
+    std::mt19937 a(2024u), b(2024u);
+    Hypergraph ha = uniform_hypergraph_configuration_model(10, 3.0, 3, 5, a);
+    Hypergraph hb = uniform_hypergraph_configuration_model(10, 3.0, 3, 5, b);
+    EXPECT_EQ(ha.hyperedges, hb.hyperedges);
+
+    std::mt19937 c(2025u);
+    Hypergraph hc = uniform_hypergraph_configuration_model(10, 3.0, 3, 5, c);
+    EXPECT_NE(ha.hyperedges, hc.hyperedges);
+}
+
+// The historical overloads must keep working for callers that do not care.
+TEST(SeedingTest, UnseededOverloadsStillProduceValidHypergraphs) {
+    Hypergraph h = sample_uniform_random(8, 8, 3);
+    EXPECT_EQ(h.m, 8);
+    for (const auto &[idx, he] : h.hyperedges)
+        EXPECT_EQ(he.size(), 3u);
+}

@@ -7,9 +7,24 @@
 #include <thread>
 #include "utils.hpp"
 
+// The historical generator: thread_local, seeded from the clock and the thread
+// id. Kept so the no-generator overloads behave exactly as before, but note
+// that nothing seeded this way is reproducible - neither across runs nor,
+// under TBB, across repeats of the same run.
+std::mt19937 &default_generator() {
+    static thread_local std::mt19937 generator(
+        clock() + std::hash<std::thread::id>()(std::this_thread::get_id()));
+    return generator;
+}
+
 // Generates a k-uniform hypergraph by sampling m hyperedges of size k
 // uniformly at random. Guarantees that every node has non-zero degree.
 Hypergraph sample_uniform_random(int n, int m, int k)
+{
+    return sample_uniform_random(n, m, k, default_generator());
+}
+
+Hypergraph sample_uniform_random(int n, int m, int k, std::mt19937 &generator)
 {
     int maximum_non_singletons = m*k;
     if (maximum_non_singletons < n) {
@@ -21,9 +36,6 @@ Hypergraph sample_uniform_random(int n, int m, int k)
     {
         return Hypergraph(std::vector<std::vector<int> > (0));
     }
-
-    // Construct a thread_local RNG
-    static thread_local std::mt19937 generator(clock() + std::hash<std::thread::id>()(std::this_thread::get_id()));
 
     std::uniform_int_distribution<int> distribution(0, n-1);
     std::set<int> nodes;
@@ -65,13 +77,20 @@ std::vector<int> sample_hyperedge(int k, std::mt19937 &gen, std::uniform_int_dis
 }
 
 Hypergraph uniform_hypergraph_configuration_model(int n, double gamma, int k, int max_degree) {
-    std::map<int, int> node_degree_map = get_powerlaw_degrees(n, gamma, max_degree);
-    return uniform_hypergraph_configuration_model(node_degree_map, k);
+    return uniform_hypergraph_configuration_model(n, gamma, k, max_degree, default_generator());
+}
+
+// NOTE both draws - the degree sequence and the stub matching - must come from
+// the SAME generator, or the pair is only half reproducible.
+Hypergraph uniform_hypergraph_configuration_model(int n, double gamma, int k, int max_degree, std::mt19937 &gen) {
+    std::map<int, int> node_degree_map = get_powerlaw_degrees(n, gamma, max_degree, gen);
+    return uniform_hypergraph_configuration_model(node_degree_map, k, gen);
 }
 
 Hypergraph uniform_hypergraph_configuration_model(int n, double gamma, int k) {
-    std::map<int, int> node_degree_map = get_powerlaw_degrees(n, gamma, n-1);
-    return uniform_hypergraph_configuration_model(node_degree_map, k);
+    std::mt19937 &gen = default_generator();
+    std::map<int, int> node_degree_map = get_powerlaw_degrees(n, gamma, n-1, gen);
+    return uniform_hypergraph_configuration_model(node_degree_map, k, gen);
 }
 
 // k-uniform configuration model with degree distribution node_degrees
@@ -83,9 +102,10 @@ Hypergraph uniform_hypergraph_configuration_model(int n, double gamma, int k) {
 // if we reach the last hyperedge and have a repeated node. These modifications
 // should be negligible for sparse hypergraphs.
 Hypergraph uniform_hypergraph_configuration_model(std::map<int, int> node_degrees, int k) {
-    // Construct a thread_local RNG
-    static thread_local std::mt19937 gen(clock() + std::hash<std::thread::id>()(std::this_thread::get_id()));
+    return uniform_hypergraph_configuration_model(node_degrees, k, default_generator());
+}
 
+Hypergraph uniform_hypergraph_configuration_model(std::map<int, int> node_degrees, int k, std::mt19937 &gen) {
     std::size_t kk = k;
     // Ensure that node_degrees is hypergraphical for a k-uniform hypergraph by
     // checking if the sum of the degrees is divisible by k
@@ -221,8 +241,10 @@ Hypergraph uniform_hypergraph_configuration_model(std::map<int, int> node_degree
 // NOTE: This model offers no gaurantees about the sizes of hyperedges,
 // and in fact hyperedges can be as large as m.
 Hypergraph chung_lu_hypergraph(std::map<int, int> node_degrees, std::map<int, int> hyperedge_sizes) {
-    // Construct a thread_local RNG
-    static thread_local std::mt19937 generator(clock() + std::hash<std::thread::id>()(std::this_thread::get_id()));
+    return chung_lu_hypergraph(node_degrees, hyperedge_sizes, default_generator());
+}
+
+Hypergraph chung_lu_hypergraph(std::map<int, int> node_degrees, std::map<int, int> hyperedge_sizes, std::mt19937 &generator) {
     std::uniform_real_distribution<double> distribution(0, 1);
 
     // The loops go in decreasing order of degree and hyperedge size 
@@ -292,7 +314,10 @@ Hypergraph chung_lu_hypergraph(std::map<int, int> node_degrees, std::map<int, in
 }
 
 std::map<int, int> get_powerlaw_degrees(int n, double gamma, int max_k) {
-    static thread_local std::mt19937 generator(clock() + std::hash<std::thread::id>()(std::this_thread::get_id()));
+    return get_powerlaw_degrees(n, gamma, max_k, default_generator());
+}
+
+std::map<int, int> get_powerlaw_degrees(int n, double gamma, int max_k, std::mt19937 &generator) {
     std::uniform_real_distribution<double> distribution(0, 1);
     std::map<int, int> degrees;
     double sampled_val;

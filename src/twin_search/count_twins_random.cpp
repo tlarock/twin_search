@@ -1,7 +1,9 @@
 #include <iostream>
 #include <fstream>
 #include <chrono>
+#include <cstdint>
 #include <iterator>
+#include <random>
 #include <oneapi/tbb.h>
 #include <oneapi/tbb/task_arena.h>
 #include <oneapi/tbb/global_control.h>
@@ -43,6 +45,7 @@ struct MyArgs : public argparse::Args {
     int &width_limit_exponent = kwarg("width-limit-exp", "If >0, no sample with product of binomials > 10^width-limit-exp will be searched.").set_default(0);
     bool &width_limit_auto = flag("width-limit-auto", "If given, automatically choose a width-limit by computing the width-product of --samples examples and choosing the median. Incompatible with width-limit-exp, which is ignored if this is given.");
     int &width_limit_samples = kwarg("width-limit-samples", "If >0 and --width-limit-auto is given, auto width limit will be set to the median of this number of samples").set_default(0);
+    unsigned int &seed = kwarg("seed", "Master RNG seed. If 0 (default), sampling is seeded from the clock and thread id and is NOT reproducible; any positive value makes the sampled hypergraphs a deterministic function of (seed, sample index), independent of thread count and scheduling. Output LINE ORDER still varies under parallel writes - sort before diffing.").set_default(0u);
     bool &no_max_rejections = flag("infinite-rejections", "If given with width_limit > 0, there will be no limit on the number of samples rejected. Warning: Could lead to infinite loops. No effect if width_limit_exp <= 0.");
 };
 
@@ -52,6 +55,13 @@ struct MyArgs : public argparse::Args {
 struct Params {
     bool config_model;
     int i;
+    // Master seed, and how many times THIS sample index has been retried after
+    // a width-limit rejection. The attempt counter is not cosmetic: a rejected
+    // sample is re-fed with the same Params, so if the stream depended only on
+    // (seed, i) the retry would regenerate the identical hypergraph and be
+    // rejected again forever.
+    unsigned int seed;
+    int attempt;
     int n;
     int m;
     double gamma;
@@ -85,6 +95,20 @@ void write_all_twins(TwinSearch &twins, std::ofstream &outfile) {
     }
 }
 
+// Deterministic per-sample generator.
+//
+// Reproducibility has to survive TBB, so a sample's random stream must depend
+// only on (master seed, sample index, attempt) - never on which worker thread
+// runs it, nor on how many threads there are, nor on completion order.
+// std::seed_seq does the mixing, so adjacent indices do not give correlated
+// streams.
+static std::mt19937 sample_generator(const Params &p) {
+    std::seed_seq seq{static_cast<std::uint32_t> (p.seed),
+                      static_cast<std::uint32_t> (p.i),
+                      static_cast<std::uint32_t> (p.attempt)};
+    return std::mt19937(seq);
+}
+
 bool one_sample_write(Params &p, std::ofstream &outfile) {
     // A map from a size distribution represented as a vector with entries
     // corresponding to min_k,...,max_k pointing to a 2-entry vector consisting
@@ -97,12 +121,20 @@ bool one_sample_write(Params &p, std::ofstream &outfile) {
     int max_log_width = 0; 
     std::chrono::high_resolution_clock time;
 
-    // Sample a hypergraph
+    // Sample a hypergraph. seed == 0 keeps the historical, unseeded behaviour.
     Hypergraph h;
-    if (!p.config_model)
-        h = sample_uniform_random(p.n, p.m, p.k);
-    else
-        h = uniform_hypergraph_configuration_model(p.n, p.gamma, p.k, p.n / 2);
+    if (p.seed == 0) {
+        if (!p.config_model)
+            h = sample_uniform_random(p.n, p.m, p.k);
+        else
+            h = uniform_hypergraph_configuration_model(p.n, p.gamma, p.k, p.n / 2);
+    } else {
+        std::mt19937 gen = sample_generator(p);
+        if (!p.config_model)
+            h = sample_uniform_random(p.n, p.m, p.k, gen);
+        else
+            h = uniform_hypergraph_configuration_model(p.n, p.gamma, p.k, p.n / 2, gen);
+    }
 
     if (h.m != p.m || h.n != p.n) {
         {
@@ -216,17 +248,36 @@ bool one_sample_write(Params &p, std::ofstream &outfile) {
     return true;
 }
 
-int compute_width_limit(int n, int m, double gamma, int k, int min_k, int max_k, int num_samples, bool config_model) {
+// NOTE the width-limit pre-pass draws its own samples, so it needs seeding too
+// or a --seed run is only partly reproducible. It uses a stream derived from
+// the master seed but deliberately distinct from any sample's, so the pre-pass
+// and sample 0 do not draw the same hypergraph.
+int compute_width_limit(int n, int m, double gamma, int k, int min_k, int max_k, int num_samples, bool config_model, unsigned int seed) {
     std::vector<int> sampled_width_limits(num_samples);
     Hypergraph h;
     TwinSearch twins;
     ProjectedGraph proj;
     // Sample --samples hypergraphs and compute their width limits
     for(int i = 0; i < num_samples; i++) {
-        if (!config_model)
-            h = sample_uniform_random(n, m, k);
-        else
-            h = uniform_hypergraph_configuration_model(n, gamma, k, n / 2);
+        if (seed == 0) {
+            if (!config_model)
+                h = sample_uniform_random(n, m, k);
+            else
+                h = uniform_hypergraph_configuration_model(n, gamma, k, n / 2);
+        } else {
+            // A fixed tag keeps this stream clear of the (seed, i, attempt)
+            // streams used for the samples themselves, so the pre-pass and
+            // sample 0 never draw the same hypergraph.
+            const std::uint32_t WIDTH_LIMIT_STREAM = 0x5741444Du;
+            std::seed_seq seq{static_cast<std::uint32_t> (seed),
+                              WIDTH_LIMIT_STREAM,
+                              static_cast<std::uint32_t> (i)};
+            std::mt19937 gen(seq);
+            if (!config_model)
+                h = sample_uniform_random(n, m, k, gen);
+            else
+                h = uniform_hypergraph_configuration_model(n, gamma, k, n / 2, gen);
+        }
         
         // Construct a projected graph object
         proj = ProjectedGraph(h);
@@ -309,6 +360,7 @@ int main(int argc, char *argv[]) {
     const bool sequential = args.sequential_twins;
     const bool sequential_samples = args.sequential_samples;
     const bool append = args.append;
+    const unsigned int seed = args.seed;
     const int start_sample = args.start_sample;
     // Note: not const because modified if auto_width_limit is true
     int width_limit_exponent = args.width_limit_exponent;
@@ -360,7 +412,7 @@ int main(int argc, char *argv[]) {
         if (width_limit_samples < 1)
             width_limit_samples = num_samples*10; // Hard-coded sample size
 
-        width_limit_exponent = compute_width_limit(n, m, gamma, k, min_k, max_k, width_limit_samples, config_model);
+        width_limit_exponent = compute_width_limit(n, m, gamma, k, min_k, max_k, width_limit_samples, config_model, seed);
         std::cout << "Width Limit Exp: " << width_limit_exponent << std::endl;
     }
 
@@ -388,9 +440,14 @@ int main(int argc, char *argv[]) {
     std::vector<Params> loop_args; 
     // Construct arguments vector using Params helper struct
     for (int i = start_sample; i < num_samples; i++) {
-        Params p(config_model, i, n, m, gamma, k, min_k, max_k, filter_isomorphic, sequential, width_limit_exponent);
+        Params p(config_model, i, seed, 0, n, m, gamma, k, min_k, max_k, filter_isomorphic, sequential, width_limit_exponent);
         loop_args.push_back(p);
     }
+
+    if (seed == 0)
+        std::cout << "Seed: 0 (unseeded - this run is NOT reproducible; pass --seed <n> to fix it)" << std::endl;
+    else
+        std::cout << "Seed: " << seed << " (reproducible; sampled hypergraphs depend only on seed and sample index)" << std::endl;
 
     std::cout << "Constructed input arguments." << std::endl;
 
@@ -418,14 +475,17 @@ int main(int argc, char *argv[]) {
         tbb::parallel_for_each(loop_args.begin(), loop_args.end(),
                 [&](Params p, tbb::feeder<Params>& feeder)
         {
-            thread_local bool success;
-            success = one_sample_write(p, outfile);
+            bool success = one_sample_write(p, outfile);
             if (!success) {
                 {
                     tbb::spin_mutex::scoped_lock lock(feeder_mutex);
                     num_rejections += 1;
                     if (no_max_rejections || num_rejections < max_rejections) {
-                        // Add another copy of p if this sample failed due to width limit
+                        // Retry this sample. attempt MUST advance: with a fixed
+                        // --seed the stream is a function of (seed, i, attempt),
+                        // so re-feeding an unchanged p would redraw the very
+                        // hypergraph that was just rejected, forever.
+                        p.attempt += 1;
                         feeder.add(p);
                     }
                 }
@@ -436,7 +496,7 @@ int main(int argc, char *argv[]) {
         bool success;
         while (num_successes < num_samples) {
             for(std::size_t i = 0; i < loop_args.size(); i++) {
-                    success = one_sample_write(loop_args[i], outfile);
+                success = one_sample_write(loop_args[i], outfile);
                 if (success) {
                     num_successes += 1;
                     if (num_successes >= num_samples)
@@ -444,6 +504,9 @@ int main(int argc, char *argv[]) {
                 }
                 else {
                     num_rejections += 1;
+                    // See the note in the parallel branch: a retry needs a new
+                    // stream or it redraws the rejected hypergraph forever.
+                    loop_args[i].attempt += 1;
                     if (!no_max_rejections && num_rejections >= max_rejections)
                         break;
                 }
