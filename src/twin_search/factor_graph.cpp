@@ -94,7 +94,7 @@ int FactorGraph::node_degree(int node_id) {
 	if (node_id < static_cast<int> (boost::num_vertices(g))) {
     	return boost::degree(node_id, g);
     } else {
-        std::cout << "WARNING: Tried to get degree of node_id: " << node_id << " which is larger than number of vertices: " << boost::num_vertices(g) << std::endl;
+        diagnostic() << "WARNING: Tried to get degree of node_id: " << node_id << " which is larger than number of vertices: " << boost::num_vertices(g) << std::endl;
 		return 0;
     }
 }
@@ -124,7 +124,7 @@ std::vector<int> FactorGraph::get_vertex_neighbors(int node_id) {
 
     	return ne_vect;
     } else {
-        std::cout << "WARNING: Tried to get neighbors of node_id: " << node_id << " which is larger than number of vertices: " << boost::num_vertices(g) << std::endl;
+        diagnostic() << "WARNING: Tried to get neighbors of node_id: " << node_id << " which is larger than number of vertices: " << boost::num_vertices(g) << std::endl;
 		return std::vector<int>(0);
     }
 }

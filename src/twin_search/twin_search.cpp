@@ -13,13 +13,6 @@
 
 namespace ublas=boost::numeric::ublas;
 
-// A mutex for writing to cout from within this file
-// Note: does not prevent threads in other translation
-// units from writing to cout at the same time!
-// TODO: Switch to wrapping std::cout in std::basic_osyncstream
-// instead of this ad-hoc non-solution!
-tbb::spin_mutex COUT_MUTEX;
-
 // A simple struct to store a partial hypergraph, its projection
 // remainder, and the index into the execution order of the current
 // edge to be satisfied.
@@ -90,9 +83,9 @@ TwinSearch::TwinSearch(ProjectedGraph proj_, int min_k, int max_k, bool filter_i
         proj_diag_sum += proj.proj_mat(u,u);
 
     if (use_diagonal && proj_diag_sum < 1) {
-        std::cout << "Warning: use_diagonal set to true, but sum of diagonal is 0." << std::endl;
+        diagnostic() << "Warning: use_diagonal set to true, but sum of diagonal is 0." << std::endl;
     } else if (!use_diagonal && proj_diag_sum > 1) {
-        std::cout << "Warning: use_diagonal set to false, but sum of diagonal is greater than 0. Setting proj.proj_mat(i,i) entries to 0." << std::endl;
+        diagnostic() << "Warning: use_diagonal set to false, but sum of diagonal is greater than 0. Setting proj.proj_mat(i,i) entries to 0." << std::endl;
         for (std::size_t u = 0; u < proj.proj_mat.size1(); ++u)
             proj.proj_mat(u,u) = 0;
     }
@@ -115,10 +108,7 @@ TwinSearch::TwinSearch(ProjectedGraph proj_, int min_k, int max_k, bool filter_i
         else
             search(filter_isomorphic);
     } else if (!feasible){
-        {
-            tbb::spin_mutex::scoped_lock lock(COUT_MUTEX);
-            std::cout << "Warning: encountered infeasible search due to an edge-node with degree smaller than its weight." << std::endl;
-        }
+        diagnostic() << "Warning: encountered infeasible search due to an edge-node with degree smaller than its weight." << std::endl;
     }
 }
 
@@ -217,10 +207,7 @@ void TwinSearch::process_item(std::vector<StackItem> &stack, StackItem &s, std::
 
 void TwinSearch::search(bool filter_isomorphic) {
     if (!feasible) {
-        {
-            tbb::spin_mutex::scoped_lock lock(COUT_MUTEX);
-            std::cout << "search() was called on infeasible projection. Returning without running search." << std::endl;
-        }
+        diagnostic() << "search() was called on infeasible projection. Returning without running search." << std::endl;
     }
     // Initialize container for bipartite representations
     std::vector<UndirectedGraph> bipartites;
@@ -534,27 +521,26 @@ std::vector<std::vector<int> > TwinSearch::inflate_cnodes(const std::vector<int>
 
 // prints a container of containers of hypegraphs to the console
 void TwinSearch::print_twins(const std::vector<std::vector<int> > &twins){
+    // Named rather than per-line, so the whole dump is emitted as one unit.
+    SyncStream out(std::cout);
     for (std::vector<int> mate : twins) {
         for (int cnode_id : mate) {
             std::vector<int> he = fact.node_map.at(cnode_id);
             for (std::size_t i = 0; i < he.size(); i++) {
                 if (i < he.size()-1) 
-                    std::cout << he[i] << ",";
+                    out << he[i] << ",";
                 else
-                    std::cout << he[i] << " ";
+                    out << he[i] << " ";
             }
         }
-        std::cout << std::endl;
+        out << "\n";
     }
 }
 
 // START PARALLEL FUNCTIONS
 void TwinSearch::parallel_search(bool filter_isomorphic) {
     if (!feasible) {
-        {
-            tbb::spin_mutex::scoped_lock lock(COUT_MUTEX);
-            std::cout << "parallel_search() was called on infeasible projection. Returning without running search." << std::endl;
-        }
+        diagnostic() << "parallel_search() was called on infeasible projection. Returning without running search." << std::endl;
     }
     tbb::concurrent_vector<std::vector<int> > concurrent_twins;
     

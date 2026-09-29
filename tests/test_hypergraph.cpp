@@ -1,4 +1,6 @@
 #include <sstream>
+#include <thread>
+#include <regex>
 #include <functional>
 #include <string>
 #include "hypergraph.hpp"
@@ -285,4 +287,46 @@ TEST(HypergraphTest, SaysNothingForWellFormedInput) {
     std::vector<std::vector<int> > input = {{0,1,2},{1,2,3},{0,2,3}};
     std::string msg = capture_stderr([&]{ Hypergraph h(input); });
     EXPECT_EQ(msg, "") << msg;
+}
+
+// The repair report is emitted from constructors that run inside TBB loops, so
+// several threads can report at once. It goes through std::osyncstream, which
+// buffers each report and emits it in one piece; this pins that, because a
+// report interleaved with another is worse than no report at all - it looks
+// like corrupted data rather than a warning.
+TEST(HypergraphTest, RepairReportIsNotInterleavedAcrossThreads) {
+    const int kThreads = 16;
+    std::ostringstream buf;
+    std::streambuf *old = std::cerr.rdbuf(buf.rdbuf());
+    {
+        std::vector<std::thread> threads;
+        for (int t = 0; t < kThreads; t++) {
+            threads.emplace_back([]{
+                std::vector<std::vector<int> > bad = {{0,1,2},{0,1,2},{0,3,3}};
+                Hypergraph h(bad);
+            });
+        }
+        for (auto &th : threads) th.join();
+    }
+    std::cerr.rdbuf(old);
+
+    const std::regex header("^Warning: input hypergraph was not simple and has been modified\\.$");
+    const std::regex detail("^  - [0-9]+ hyperedge\\(s\\) .*\\.$");
+    const std::regex footer("^  Results below describe the modified hypergraph, not the input as given\\.$");
+
+    int headers = 0, footers = 0, unmatched = 0, total = 0;
+    std::istringstream in(buf.str());
+    for (std::string line; std::getline(in, line); ) {
+        if (line.empty()) continue;
+        total++;
+        if (std::regex_match(line, header)) headers++;
+        else if (std::regex_match(line, footer)) footers++;
+        else if (!std::regex_match(line, detail)) unmatched++;
+    }
+
+    EXPECT_EQ(headers, kThreads);
+    EXPECT_EQ(footers, kThreads);
+    // A spliced report shows up as a line matching none of the three shapes.
+    EXPECT_EQ(unmatched, 0) << "interleaved output:\n" << buf.str();
+    EXPECT_EQ(total, kThreads * 4);   // header + 2 details + footer, per thread
 }

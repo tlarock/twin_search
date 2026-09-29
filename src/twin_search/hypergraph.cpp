@@ -1,6 +1,5 @@
 #include "./hypergraph.hpp"
 
-#include <syncstream>
 
 
 // Default constructor
@@ -12,15 +11,17 @@ Hypergraph::Hypergraph() {
 // Print the hypergraph to the console, separating nodes with commas
 // and hyperedges with spaces.
 void Hypergraph::pretty_print() {
+    // Named rather than per-line, so the whole dump is emitted as one unit.
+    SyncStream out(std::cout);
     for (const auto& [he_idx, he]: hyperedges)
     {
         for (std::size_t i = 0; i < he.size()-1; i++)
         {
-            std::cout << he[i] << ",";
+            out << he[i] << ",";
         }
-        std::cout << he.back() << " ";
+        out << he.back() << " ";
     }
-    std::cout << std::endl;
+    out << "\n";
 }
 
 // Returns the bipartite representation of a hypergraph
@@ -109,14 +110,14 @@ bool Hypergraph::store_hyperedge(int he_idx, const std::vector<int> &he, std::se
     return true;
 }
 
-// Tells the user their input was altered. Uses std::osyncstream so that the
+// Tells the user their input was altered. Uses SyncStream so that the
 // message is not interleaved with other threads' output: these constructors
 // run inside TBB loops in count_twins_random and exhaustive_search_projections.
 void Hypergraph::report_input_repairs(const InputRepairs &repairs) {
     if (!repairs.any())
         return;
 
-    std::osyncstream out(std::cerr);
+    SyncStream out(std::cerr);   // see diagnostic() in utils.hpp
     out << "Warning: input hypergraph was not simple and has been modified.\n";
     if (repairs.hyperedges_with_repeated_nodes > 0) {
         out << "  - " << repairs.hyperedges_with_repeated_nodes

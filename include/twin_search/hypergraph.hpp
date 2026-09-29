@@ -199,7 +199,7 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_) {
         report_input_repairs(repairs);
 
         if (static_cast<int> (nodes.size()) > Hypergraph::n) {
-            std::cout << "Number of nodes in the input " << nodes.size() << " is larger than input value for n " << n_ << ". Value of Hypergraph.n is actual number of nodes." << std::endl;
+            diagnostic() << "Number of nodes in the input " << nodes.size() << " is larger than input value for n " << n_ << ". Value of Hypergraph.n is actual number of nodes." << std::endl;
             Hypergraph::n = static_cast<int> (nodes.size());
         }
     }
@@ -263,12 +263,12 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_, int m_) {
 
 
         if (static_cast<int> (nodes.size()) > n_) {
-            std::cout << "Number of nodes in the input " << nodes.size() << " is larger than input value for n " << n_ << ". Value of Hypergraph.n is actual number of nodes." << std::endl;
+            diagnostic() << "Number of nodes in the input " << nodes.size() << " is larger than input value for n " << n_ << ". Value of Hypergraph.n is actual number of nodes." << std::endl;
             Hypergraph::n = static_cast<int> (nodes.size());
         }
 
         if (static_cast<int> (hyperedges.size()) > m_) {
-            std::cout << "Number of hyperedges in the input " << Hypergraph::hyperedges.size() << " is larger than input value for m " << m_ << ". Value of Hypergraph.m is actual number of hyperedges." << std::endl;
+            diagnostic() << "Number of hyperedges in the input " << Hypergraph::hyperedges.size() << " is larger than input value for m " << m_ << ". Value of Hypergraph.m is actual number of hyperedges." << std::endl;
             Hypergraph::m = static_cast<int> (hyperedges.size());
         } 
     }
