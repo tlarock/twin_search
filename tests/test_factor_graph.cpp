@@ -94,3 +94,63 @@ TEST(FactorGraphTest, EdgeNodeCountMatchesProjectionEdgeCount) {
         EXPECT_EQ(fact.node_map.at(eid).size(), 2u);
     }
 }
+
+// |eta_e| is NOT boost::degree. When min_k <= 2 the 2-clique {u,v} gets no
+// clique-node of its own, so the constructor puts a SELF-LOOP on the edge-node,
+// and boost counts a self-loop twice. Using the degree therefore over-counted
+// the neighbourhood of every edge-node by exactly one, which inflated the
+// worst-case search tree size (paper Eq. worst-case) reported for every
+// projection. These tests pin the distinction in both directions.
+TEST(FactorGraphTest, NeighborhoodSizeExcludesTheDoubleCountedSelfLoop) {
+    std::vector<std::vector<int> > single_triangle = {{0, 1, 2}};
+    Hypergraph h(single_triangle);
+    ProjectedGraph proj(h);
+    FactorGraph fact(proj, 2, 3);
+
+    // 3 edge-nodes (01, 02, 12) and exactly 1 clique-node (the triangle).
+    ASSERT_EQ(fact.num_edge_nodes, 3);
+    ASSERT_EQ(fact.num_clique_nodes, 1);
+
+    for (int eid = 0; eid < fact.num_edge_nodes; eid++) {
+        // eta_e = {the 2-clique itself, via the self-loop} + {the triangle}
+        EXPECT_EQ(fact.neighborhood_size(eid), 2) << "edge-node " << eid;
+        // boost::degree sees the self-loop twice, hence 3
+        EXPECT_EQ(fact.node_degree(eid), 3) << "edge-node " << eid;
+    }
+
+    // Clique-nodes carry no self-loop, so the two agree there.
+    for (int cid = fact.num_edge_nodes;
+         cid < fact.num_edge_nodes + fact.num_clique_nodes; cid++)
+        EXPECT_EQ(fact.neighborhood_size(cid), fact.node_degree(cid));
+}
+
+// With min_k > 2 no self-loop is created, so the two must agree everywhere -
+// the fix must not perturb uniform searches.
+TEST(FactorGraphTest, NeighborhoodSizeMatchesDegreeWhenMinKAboveTwo) {
+    std::vector<Hypergraph> hgs = all_hypergraphs();
+    for (Hypergraph &h : hgs) {
+        ProjectedGraph proj(h);
+        FactorGraph fact(proj, 3, h.n);
+        for (const auto &[node_id, node] : fact.node_map)
+            EXPECT_EQ(fact.neighborhood_size(node_id), fact.node_degree(node_id))
+                << "node " << node_id;
+    }
+}
+
+// neighborhood_size must always equal the number of unique neighbours that
+// get_vertex_neighbors already returns - they are two views of eta_e, and the
+// search uses the latter while the width product uses the former. If they ever
+// disagree, the reported tree size stops describing the tree actually walked.
+TEST(FactorGraphTest, NeighborhoodSizeAgreesWithGetVertexNeighbors) {
+    std::vector<Hypergraph> hgs = all_hypergraphs();
+    for (Hypergraph &h : hgs) {
+        ProjectedGraph proj(h);
+        for (int min_k : {2, 3}) {
+            FactorGraph fact(proj, min_k, h.n);
+            for (const auto &[node_id, node] : fact.node_map)
+                EXPECT_EQ(static_cast<std::size_t> (fact.neighborhood_size(node_id)),
+                          fact.get_vertex_neighbors(node_id).size())
+                    << "min_k=" << min_k << " node=" << node_id;
+        }
+    }
+}

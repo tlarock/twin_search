@@ -90,6 +90,12 @@ UndirectedGraph FactorGraph::get_graph() { return g; }
 
 // Convenience function to get degree of a node without having
 // to access fact.g directly
+// Raw boost::degree.
+//
+// WARNING: this double-counts the self-loop that an edge-node carries when
+// min_k <= 2, so it is one larger than |eta_e| for every edge-node in that
+// case. It is kept as a plain accessor; callers that mean |eta_e| must use
+// neighborhood_size() instead.
 int FactorGraph::node_degree(int node_id) {
 	if (node_id < static_cast<int> (boost::num_vertices(g))) {
     	return boost::degree(node_id, g);
@@ -97,6 +103,31 @@ int FactorGraph::node_degree(int node_id) {
         diagnostic() << "WARNING: Tried to get degree of node_id: " << node_id << " which is larger than number of vertices: " << boost::num_vertices(g) << std::endl;
 		return 0;
     }
+}
+
+// The size of eta_e: the number of DISTINCT neighbours of node_id in the
+// factor graph. For an edge-node e this is the number of candidate cliques
+// that could satisfy e, which is what the paper's worst-case search tree
+// size, prod_e binom(|eta_e|, w_e), is defined over.
+//
+// This is deliberately not boost::degree. When min_k <= 2 the 2-clique {u,v}
+// gets no clique-node of its own - the pair is already an edge-node, so the
+// constructor calls add_edge(e, e) and creates a SELF-LOOP - and boost counts
+// a self-loop twice so that the degree sum stays even. The self-loop is a
+// genuine member of eta_e (a 2-hyperedge is a legitimate way to satisfy the
+// edge when min_k <= 2), but it must be counted once, not twice.
+//
+// Using boost::degree here inflated the worst-case tree size by one degree for
+// every edge-node; see tests/test_factor_graph.cpp.
+int FactorGraph::neighborhood_size(int node_id) {
+    if (node_id >= static_cast<int> (boost::num_vertices(g))) {
+        diagnostic() << "WARNING: Tried to get neighborhood size of node_id: " << node_id << " which is larger than number of vertices: " << boost::num_vertices(g) << std::endl;
+        return 0;
+    }
+    std::set<int> unique_neighbors;
+    for (int u : boost::make_iterator_range(boost::adjacent_vertices(node_id, g)))
+        unique_neighbors.insert(u);
+    return static_cast<int> (unique_neighbors.size());
 }
 
 // Function that gets the set of unique neighbors of a vertex in the factor graph.

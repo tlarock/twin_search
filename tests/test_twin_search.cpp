@@ -1,6 +1,9 @@
 #include <iostream>
+#include <cmath>
 #include <boost/numeric/ublas/assignment.hpp>
 #include "projected_graph.hpp"
+#include "factor_graph.hpp"
+#include "utils.hpp"
 #include "twin_search.hpp"
 #include "test_hypergraphs.cpp"
 #include <gtest/gtest.h>
@@ -290,4 +293,49 @@ TEST(TwinSearchTest, NonZeroDiagonalIsIgnoredWhenUseDiagonalIsFalse) {
                 << "diagonal summing to " << stray << " changed the twin count";
         }
     }
+}
+
+// The worst case search tree size is prod_e binom(|eta_e|, w_e). It must be
+// computed over the SET of cliques that could satisfy each edge. It previously
+// used boost::degree, which counts an edge-node's self-loop twice when
+// min_k <= 2, so every published value was inflated.
+//
+// Worked example, small enough to check by hand: the single hyperedge {0,1,2}
+// projects to a triangle with all weights 1. Cliques are the three 2-cliques
+// and the one 3-clique. Each edge-node {u,v} therefore has
+//     eta_e = { the 2-clique {u,v} itself, the triangle {0,1,2} },  |eta_e| = 2
+// so the product is binom(2,1)^3 = 8 and its log10 is log10(8).
+// With the old degree it was binom(3,1)^3 = 27.
+TEST(TwinSearchTest, WidthProductUsesSetSizeNotBoostDegree) {
+    std::vector<std::vector<int> > single_triangle = {{0, 1, 2}};
+    Hypergraph h(single_triangle);
+    ProjectedGraph proj(h);
+    FactorGraph fact(proj, 2, 3);
+
+    EXPECT_DOUBLE_EQ(static_cast<double> (TwinSearch::compute_width_product(proj, fact)), 8.0);
+    EXPECT_NEAR(TwinSearch::compute_log_width_product(proj, fact), std::log10(8.0), 1e-12);
+
+    // Guard against a silent regression to the old behaviour.
+    EXPECT_NE(static_cast<double> (TwinSearch::compute_width_product(proj, fact)), 27.0);
+}
+
+// With min_k > 2 there is no self-loop, so the corrected width must be
+// identical to what the degree-based version produced. This is what keeps the
+// k-uniform results in the paper unchanged.
+TEST(TwinSearchTest, WidthProductUnchangedForUniformSearches) {
+    std::vector<std::vector<int> > hes = {{0,1,2},{1,2,3},{0,2,3},{0,1,3}};
+    Hypergraph h(hes);
+    ProjectedGraph proj(h);
+    FactorGraph fact(proj, 3, 4);
+
+    // No edge-node carries a self-loop here, so degree == |eta_e| throughout
+    // and the product below is exactly what the old code computed.
+    long double expected = 1.0;
+    for (int eid = 0; eid < fact.num_edge_nodes; eid++) {
+        ASSERT_EQ(fact.neighborhood_size(eid), fact.node_degree(eid));
+        std::vector<int> e = fact.node_map.at(eid);
+        expected *= binom(fact.node_degree(eid), proj.proj_mat(e[0], e[1]));
+    }
+    EXPECT_DOUBLE_EQ(static_cast<double> (TwinSearch::compute_width_product(proj, fact)),
+                     static_cast<double> (expected));
 }

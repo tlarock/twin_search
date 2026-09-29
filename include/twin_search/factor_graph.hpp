@@ -39,8 +39,13 @@ class FactorGraph {
         FactorGraph();
 
         UndirectedGraph get_graph();
-        // convenience function wrapping boost::degree
+        // Raw boost::degree. NOTE: this is NOT |eta_e|. When min_k <= 2 an
+        // edge-node carries a self-loop (see neighborhood_size below) and
+        // boost::degree counts a self-loop twice. Use neighborhood_size for
+        // anything that means "how many cliques could satisfy this edge".
         int node_degree(int node_id);
+        // |eta_e|: the number of DISTINCT factor-graph neighbours of node_id.
+        int neighborhood_size(int node_id);
         std::vector<int> get_vertex_neighbors(int node_id);
 };
 

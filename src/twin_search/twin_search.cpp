@@ -120,12 +120,17 @@ TwinSearch::TwinSearch(ProjectedGraph proj_, int min_k, int max_k, bool filter_i
 
 // TODO: Second constructor that takes a hyperedge size distribution 
 
+// NOTE: this uses neighborhood_size, not node_degree. It previously used the
+// raw boost degree, which double-counts an edge-node's self-loop when
+// min_k <= 2, so the test was off by one in the PERMISSIVE direction: an edge
+// needing exactly one more hyperedge than it had candidate cliques was still
+// declared feasible.
 bool TwinSearch::test_feasibility() {
     int degree;
     int weight;
     std::vector<int> edge;
     for(int eid = 0; eid < fact.num_edge_nodes; eid++) {
-	    degree = fact.node_degree(eid);
+	    degree = fact.neighborhood_size(eid);
         edge = fact.node_map.at(eid);
         weight = proj.proj_mat(edge[0], edge[1]);
         // Degree must be larger than or equal to weight
@@ -747,7 +752,7 @@ long double TwinSearch::compute_width_product(ProjectedGraph &proj, FactorGraph 
     std::vector<int> edge;
     for(int eid = 0; eid < fact.num_edge_nodes; eid++) {
         // Get num neighbors
-        degree = fact.node_degree(eid);
+        degree = fact.neighborhood_size(eid);
         edge = fact.node_map.at(eid);
         weight = proj.proj_mat(edge[0], edge[1]);
         prod *= binom(degree, weight);
@@ -770,7 +775,7 @@ double TwinSearch::compute_log_width_product(ProjectedGraph &proj, FactorGraph &
     std::vector<int> edge;
     for(int eid = 0; eid < fact.num_edge_nodes; eid++) {
         // Get num neighbors
-        degree = fact.node_degree(eid);
+        degree = fact.neighborhood_size(eid);
         edge = fact.node_map.at(eid);
         weight = proj.proj_mat(edge[0], edge[1]);
         const double width = binom(degree, weight);
