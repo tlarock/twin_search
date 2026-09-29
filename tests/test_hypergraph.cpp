@@ -430,3 +430,44 @@ TEST(HypergraphTest, OutOfRangeErrorIsActionable) {
         EXPECT_NE(what.find("single-argument"), std::string::npos) << what;
     }
 }
+
+// get_incidence_matrix must be a genuine 0/1 matrix. ublas::matrix(size1,
+// size2) does not initialise its storage, so omitting the fill value leaves
+// garbage in every entry the function does not explicitly set. That garbage
+// survives into get_lg_mat() and then into get_line_graph(), which adds one
+// edge per unit of each entry - so one large stale value asks boost for
+// billions of edges and the process dies. It is allocator-dependent, so it
+// stays hidden whenever fresh zeroed pages happen to be handed out.
+TEST(HypergraphTest, IncidenceMatrixIsBinaryAndFullyInitialised) {
+    std::vector<std::vector<int> > input = {{0,2},{1,2,3}};
+    Hypergraph h(input);
+    ublas::matrix<int> inc = h.get_incidence_matrix();
+
+    ASSERT_EQ(inc.size1(), h.hyperedges.size());
+    ASSERT_EQ(static_cast<int>(inc.size2()), h.n);
+    for (std::size_t r = 0; r < inc.size1(); r++)
+        for (std::size_t c = 0; c < inc.size2(); c++)
+            EXPECT_TRUE(inc(r, c) == 0 || inc(r, c) == 1)
+                << "entry (" << r << "," << c << ") = " << inc(r, c);
+
+    // and it must actually describe the hypergraph
+    for (std::size_t r = 0; r < inc.size1(); r++) {
+        const std::vector<int> &he = h.hyperedges[static_cast<int>(r)];
+        for (std::size_t c = 0; c < inc.size2(); c++) {
+            bool member = std::find(he.begin(), he.end(), static_cast<int>(c)) != he.end();
+            EXPECT_EQ(inc(r, c), member ? 1 : 0) << "row " << r << " col " << c;
+        }
+    }
+}
+
+// The line graph must have a sane number of edges. Before the fix this could
+// run to billions and take the process out.
+TEST(HypergraphTest, LineGraphSizeIsBounded) {
+    std::vector<std::vector<int> > input = {{0,1,2},{1,2,3},{2,3,4}};
+    Hypergraph h(input);
+    ublas::matrix<int> lg = h.get_lg_mat();
+    for (std::size_t r = 0; r < lg.size1(); r++)
+        for (std::size_t c = 0; c < lg.size2(); c++)
+            EXPECT_LE(lg(r, c), h.n) << "co-occurrence cannot exceed the node count";
+    EXPECT_LT(boost::num_edges(h.get_line_graph()), 1000u);
+}

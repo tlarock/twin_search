@@ -39,7 +39,17 @@ UndirectedGraph Hypergraph::get_bipartite() {
 }
 
 ublas::matrix<int> Hypergraph::get_incidence_matrix() {
-    ublas::matrix<int> incidence(hyperedges.size(), n);
+    // The third argument is required. ublas::matrix(size1, size2) allocates
+    // without initialising, so the entries this function does not explicitly
+    // set to 1 would otherwise hold whatever was in that memory. That matters a
+    // long way downstream: get_lg_mat() multiplies this matrix by its own
+    // transpose, and get_line_graph() then does
+    //     for (int v = 0; v < lg_mat(r,c); ++v) boost::add_edge(r, c, ...);
+    // so a single large garbage entry asks boost to add billions of edges and
+    // the process is killed. Whether it happens at all depends on whether the
+    // allocator hands back fresh (kernel-zeroed) pages or dirty ones, which is
+    // why it can lie dormant and then appear after an unrelated change.
+    ublas::matrix<int> incidence(hyperedges.size(), n, 0);
     for (std::size_t row = 0; row < incidence.size1(); ++row) {
         for (auto node : hyperedges[row]) {
             incidence(row, node) = 1;
