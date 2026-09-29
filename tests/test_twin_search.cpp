@@ -259,3 +259,35 @@ TEST(TwinSearchTest, TestGramMateExample) {
     mates_pairs = TwinSearch::run_mates_tests_parallel(lgs);
     EXPECT_EQ(mates_pairs.size(), 5);
 }
+
+// With use_diagonal false the constructor is supposed to ignore the diagonal by
+// zeroing it. It guarded that on `proj_diag_sum > 1`, so a diagonal summing to
+// exactly 1 survived; matsum(proj_rem) could then never reach 0 and the search
+// reported no twins at all. Silently returning an empty twin set is the worst
+// available failure mode, so this pins every diagonal sum around the boundary.
+TEST(TwinSearchTest, NonZeroDiagonalIsIgnoredWhenUseDiagonalIsFalse) {
+    std::vector<std::vector<int> > he = {{0,1,2},{1,2,3}};
+    Hypergraph h(he);
+
+    std::size_t expected = 0;
+    for (int stray = 0; stray <= 3; stray++) {
+        ProjectedGraph proj(h);              // zero diagonal
+        if (stray > 0)
+            proj.proj_mat(0, 0) = stray;
+
+        TwinSearch gm(proj, 2, 4, false, false, true, false);   // use_diagonal false
+        gm.search(false);
+
+        // the diagonal must have been zeroed regardless of what it summed to
+        for (std::size_t u = 0; u < gm.proj.proj_mat.size1(); ++u)
+            EXPECT_EQ(gm.proj.proj_mat(u, u), 0) << "stray=" << stray << " u=" << u;
+
+        if (stray == 0) {
+            expected = gm.twins.size();
+            EXPECT_GT(expected, 0u) << "fixture should produce twins";
+        } else {
+            EXPECT_EQ(gm.twins.size(), expected)
+                << "diagonal summing to " << stray << " changed the twin count";
+        }
+    }
+}

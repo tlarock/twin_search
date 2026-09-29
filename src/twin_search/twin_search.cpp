@@ -84,7 +84,12 @@ TwinSearch::TwinSearch(ProjectedGraph proj_, int min_k, int max_k, bool filter_i
 
     if (use_diagonal && proj_diag_sum < 1) {
         diagnostic() << "Warning: use_diagonal set to true, but sum of diagonal is 0." << std::endl;
-    } else if (!use_diagonal && proj_diag_sum > 1) {
+    } else if (!use_diagonal && proj_diag_sum > 0) {
+        // NOTE: this was `> 1`, which let a diagonal summing to exactly 1
+        // through unzeroed. matsum(proj_rem) then never reached 0, so the
+        // search reported no twins at all rather than ignoring the diagonal as
+        // requested. The message always said "greater than 0"; the condition
+        // did not.
         diagnostic() << "Warning: use_diagonal set to false, but sum of diagonal is greater than 0. Setting proj.proj_mat(i,i) entries to 0." << std::endl;
         for (std::size_t u = 0; u < proj.proj_mat.size1(); ++u)
             proj.proj_mat(u,u) = 0;
