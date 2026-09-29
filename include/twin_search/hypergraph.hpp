@@ -2,6 +2,8 @@
 #define HYPERGRAPH_H
 #include <iostream>
 #include <algorithm>
+#include <format>
+#include <stdexcept>
 #include <vector>
 #include <map>
 #include <set>
@@ -28,6 +30,12 @@ class Hypergraph {
 
         // map from node_id (in {0,...,n}) to hyperedge_ids containing node
 		std::map<int, std::vector<int> > node_memberships;
+
+        // True when the single-argument constructor renumbered the input node
+        // ids, so ids here are ranks rather than the ids that were supplied.
+        // Only meaningful for that constructor; the sized ones reject ids they
+        // cannot represent rather than renumbering.
+        bool nodes_were_remapped = false;
 
         // constructors for either set or vector of vectors as input
         Hypergraph();
@@ -80,6 +88,19 @@ class Hypergraph {
         // sample.
         static void report_input_repairs(const InputRepairs &repairs);
 
+        // Throws if any id in `nodes` falls outside 0,...,n-1. Used by the
+        // constructors that take n from the caller and therefore cannot
+        // renumber to fit.
+        static void require_ids_in_range(const std::set<int> &nodes, int n);
+
+        // Emits a note that node ids were renumbered. Callers decide whether to
+        // call this: the single-argument constructor is used both for one-off
+        // user input, where renumbering is worth reporting, and for bulk
+        // enumeration of sub-hypergraphs, where it is expected and reporting it
+        // would bury the run in output. Check nodes_were_remapped and report
+        // only where a human supplied the ids.
+        void report_remapping() const;
+
         UndirectedGraph get_bipartite();
         ublas::matrix<int> get_incidence_matrix();
         UndirectedGraph get_line_graph();
@@ -98,6 +119,10 @@ class Hypergraph {
 // This version does not accept the number of nodes or hyperedges as input.
 // Instead, it infers the number of nodes based on the input, using the number
 // of unique nodes as n (NOT the node id).
+//
+// This is the only constructor that renumbers node ids. See the note on
+// remapping below: it reports when it does so, because the node ids in any
+// output will then not be the ids that were passed in.
 //
 // NOTE: Does NOT support std::map<int, vector<int> >. May want to add this
 // possibility later, but for now must be iterable of iterable.
@@ -127,6 +152,7 @@ Hypergraph::Hypergraph(const T &input_hyperedges) {
         // check if nodes are 0,...,n, remap if not
         int max_node_id = *nodes.rbegin();
         if (max_node_id != n-1) {
+            Hypergraph::nodes_were_remapped = true;
             std::vector<int> nodes_vect(nodes.begin(), nodes.end());
             sort(nodes_vect.begin(), nodes_vect.end());
             std::map<int, int> node_map;
@@ -170,12 +196,19 @@ Hypergraph::Hypergraph(const T &input_hyperedges) {
 //
 // This version accepts the number of nodes as input and supports singleton
 // nodes in the sense that empty vectors are instantiated in node_memberships
-// for all nodes from 0,...,n-1.
+// for all nodes from 0,...,n-1. Node ids may be sparse within that range.
 //
 // NOTE: Does NOT support std::map<int, vector<int> >. May want to add this
 // possibility later, but for now must be iterable of iterable.
 //
-// NOTE: If nodes are not on 0,...,n-1, automatically re-maps from input ids.
+// NOTE: Unlike the single-argument constructor, this one does NOT remap node
+// ids - it never did, despite previously claiming to. Because n is supplied by
+// the caller, an id outside 0,...,n-1 is a caller error rather than something
+// to paper over: remapping would silently renumber nodes so that ids in any
+// output no longer matched the input, and widening n would invent isolated
+// nodes and change the reported node count. Both corrupt results quietly, so
+// out-of-range ids are rejected instead. Use the single-argument constructor
+// if you want remapping.
 template<typename T>
 Hypergraph::Hypergraph(const T &input_hyperedges, int n_) {
     Hypergraph::n = n_;
@@ -198,10 +231,12 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_) {
         Hypergraph::m = he_idx;
         report_input_repairs(repairs);
 
-        if (static_cast<int> (nodes.size()) > Hypergraph::n) {
-            diagnostic() << "Number of nodes in the input " << nodes.size() << " is larger than input value for n " << n_ << ". Value of Hypergraph.n is actual number of nodes." << std::endl;
-            Hypergraph::n = static_cast<int> (nodes.size());
-        }
+        // Reject ids outside 0,...,n-1. The previous check compared the
+        // *count* of distinct nodes against n and widened n to match, which
+        // caught nothing when ids were merely sparse and out of range: ids of
+        // {0, 1, 900} with n = 3 has a count of 3 and passed, then indexed a
+        // 3x3 projection matrix at 900.
+        require_ids_in_range(nodes, Hypergraph::n);
     }
 }
 
@@ -215,12 +250,14 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_) {
 // This version accepts the number of nodes AND number of hyperedges as input
 // and supports singleton nodes and empty hyperedges in the sense that empty
 // vectors are instantiated in node_memberships for all nodes from 0,...,n-1
-// and in hyperedges for edge_id 0,...,m-1
+// and in hyperedges for edge_id 0,...,m-1. Node ids may be sparse within
+// 0,...,n-1.
 //
 // NOTE: Does NOT support std::map<int, vector<int> >. May want to add this
 // possibility later, but for now must be iterable of iterable.
 //
-// NOTE: If nodes are not on 0,...,n-1, automatically re-maps from input ids.
+// NOTE: Does NOT remap node ids; see the two-argument constructor above for
+// why out-of-range ids are rejected rather than remapped or accommodated.
 template<typename T>
 Hypergraph::Hypergraph(const T &input_hyperedges, int n_, int m_) {
     Hypergraph::n = n_;
@@ -262,10 +299,7 @@ Hypergraph::Hypergraph(const T &input_hyperedges, int n_, int m_) {
         report_input_repairs(repairs);
 
 
-        if (static_cast<int> (nodes.size()) > n_) {
-            diagnostic() << "Number of nodes in the input " << nodes.size() << " is larger than input value for n " << n_ << ". Value of Hypergraph.n is actual number of nodes." << std::endl;
-            Hypergraph::n = static_cast<int> (nodes.size());
-        }
+        require_ids_in_range(nodes, Hypergraph::n);
 
         if (static_cast<int> (hyperedges.size()) > m_) {
             diagnostic() << "Number of hyperedges in the input " << Hypergraph::hyperedges.size() << " is larger than input value for m " << m_ << ". Value of Hypergraph.m is actual number of hyperedges." << std::endl;

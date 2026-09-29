@@ -130,3 +130,47 @@ void Hypergraph::report_input_repairs(const InputRepairs &repairs) {
     out << "  Results below describe the modified hypergraph, not the input as given."
         << std::endl;
 }
+
+// Throws if any node id falls outside 0,...,n-1.
+//
+// The constructors that take n from the caller cannot renumber to fit without
+// silently changing what the results mean, so an out-of-range id is an error
+// rather than something to repair. The error names the offending id and points
+// at the constructor that does remap.
+void Hypergraph::require_ids_in_range(const std::set<int> &nodes, int n) {
+    if (nodes.empty())
+        return;
+
+    const int lowest = *nodes.begin();
+    const int highest = *nodes.rbegin();
+    if (lowest >= 0 && highest < n)
+        return;
+
+    throw std::out_of_range(std::format(
+        "Hypergraph: node id {} is outside 0..{} for the given n={}. This "
+        "constructor does not renumber nodes, because doing so would mean the "
+        "node ids in any output no longer matched the ids supplied. Either "
+        "pass an n that covers the ids, or use the single-argument Hypergraph "
+        "constructor, which remaps ids to 0..n-1 and says so.",
+        lowest < 0 ? lowest : highest, n - 1, n));
+}
+
+// Emits a note that node ids were renumbered. Called by whoever knows the ids
+// came from a human, not by the constructor: the exhaustive driver builds a
+// Hypergraph per candidate sub-hypergraph and most of those legitimately do not
+// span every node, so reporting from the constructor produced hundreds of
+// kilobytes of warnings on an ordinary run.
+//
+// This matters for provenance rather than correctness: the hypergraph is
+// faithfully relabelled, but every node id written to an output file afterwards
+// is a rank, not the id that was read in.
+void Hypergraph::report_remapping() const {
+    if (!nodes_were_remapped)
+        return;
+
+    diagnostic() << "Note: input node ids were not 0.." << (n - 1)
+                 << ", so they have been renumbered to 0.." << (n - 1)
+                 << " in ascending order. Node ids in any output refer to the "
+                    "renumbered nodes, not the input ids."
+                 << std::endl;
+}

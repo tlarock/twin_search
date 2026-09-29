@@ -58,7 +58,12 @@ Hypergraph read_data(std::string filename) {
 
     infile.close();
 
-    return Hypergraph(hyperedges);
+    // These ids came from a human-supplied file, so renumbering them is worth
+    // reporting here - unlike the bulk enumeration in
+    // exhaustive_search_projections, where it is routine.
+    Hypergraph h(hyperedges);
+    h.report_remapping();
+    return h;
 }
 
 void write_all_twins(TwinSearch &twins, std::ofstream &outfile) {

@@ -173,13 +173,6 @@ TEST(HypergraphTest, RemapTest) {
     }
 }
 
-// A node repeated inside a hyperedge is not a valid simple hypergraph, and the
-// search is not defined for one. Hypergraph drops the repeats at construction
-// so that downstream invariants hold - in particular so that
-// ProjectedGraph::num_edges keeps matching the number of edge-nodes
-// FactorGraph builds. Without this, the parallel search looks up an edge-node
-// id that is absent from FactorGraph::node_map, and std::map::operator[]
-// inserts it concurrently from every worker thread.
 // Captures whatever the constructor wrote to stderr, so the user-facing
 // warning is tested rather than assumed.
 static std::string capture_stderr(const std::function<void()> &fn) {
@@ -190,6 +183,13 @@ static std::string capture_stderr(const std::function<void()> &fn) {
     return buf.str();
 }
 
+// A node repeated inside a hyperedge is not a valid simple hypergraph, and the
+// search is not defined for one. Hypergraph drops the repeats at construction
+// so that downstream invariants hold - in particular so that
+// ProjectedGraph::num_edges keeps matching the number of edge-nodes
+// FactorGraph builds. Without this, the parallel search looks up an edge-node
+// id that is absent from FactorGraph::node_map, and std::map::operator[]
+// inserts it concurrently from every worker thread.
 TEST(HypergraphTest, RepeatedNodesInHyperedgeAreDropped) {
     std::vector<std::vector<int> > input = {{0,1,2},{1,2,3},{0,3,3},{0,2,3}};
     Hypergraph h(input);
@@ -329,4 +329,104 @@ TEST(HypergraphTest, RepairReportIsNotInterleavedAcrossThreads) {
     // A spliced report shows up as a line matching none of the three shapes.
     EXPECT_EQ(unmatched, 0) << "interleaved output:\n" << buf.str();
     EXPECT_EQ(total, kThreads * 4);   // header + 2 details + footer, per thread
+}
+
+// The pre-existing RemapTest only checked that ids came out below n. It never
+// checked that the hyperedges still describe the same hypergraph afterwards,
+// which is the property that actually matters.
+TEST(HypergraphTest, RemapPreservesStructure) {
+    struct Case { std::vector<std::vector<int> > input; std::vector<std::vector<int> > expected; };
+    std::vector<Case> cases = {
+        {{{1,2},{2,3}},        {{0,1},{1,2}}},         // shifted
+        {{{0,5}},              {{0,1}}},               // sparse pair
+        {{{5,10},{10,15},{5,15}}, {{0,1},{1,2},{0,2}}},// evenly sparse
+        {{{0,1},{1,900}},      {{0,1},{1,2}}},         // one wild id
+        {{{9,7},{7,3},{3,9}},  {{1,2},{0,1},{0,2}}},   // unsorted, sparse
+    };
+    for (const auto &c : cases) {
+        Hypergraph h(c.input);
+        ASSERT_EQ(h.n, static_cast<int>(c.expected.size() ? [&]{
+            std::set<int> ids; for (auto &e : c.input) for (int u : e) ids.insert(u); return ids.size();
+        }() : 0));
+        ASSERT_EQ(h.hyperedges.size(), c.expected.size());
+        for (std::size_t i = 0; i < c.expected.size(); i++)
+            EXPECT_EQ(h.hyperedges[static_cast<int>(i)], c.expected[i]) << "hyperedge " << i;
+
+        // node_memberships must agree with the relabelled hyperedges
+        for (const auto &[u, membs] : h.node_memberships)
+            for (int eid : membs)
+                EXPECT_NE(std::find(h.hyperedges[eid].begin(), h.hyperedges[eid].end(), u),
+                          h.hyperedges[eid].end())
+                    << "node " << u << " claims hyperedge " << eid;
+    }
+}
+
+// Remapping changes what a node id means, so it must not be silent.
+// Remapping changes what a node id means, so callers that got their ids from a
+// human must be able to say so. The constructor only records the fact: it is
+// called in bulk by exhaustive_search_projections, where remapping is routine
+// and reporting it from the constructor buried the run in output.
+TEST(HypergraphTest, RemappingIsRecordedButNotReportedByTheConstructor) {
+    std::vector<std::vector<int> > remapped = {{1,2},{2,3}};
+    std::string msg = capture_stderr([&]{
+        Hypergraph h(remapped);
+        EXPECT_TRUE(h.nodes_were_remapped);
+    });
+    EXPECT_EQ(msg, "") << "constructor must stay silent: " << msg;
+
+    std::vector<std::vector<int> > contiguous = {{0,1},{1,2}};
+    msg = capture_stderr([&]{
+        Hypergraph h(contiguous);
+        EXPECT_FALSE(h.nodes_were_remapped);
+    });
+    EXPECT_EQ(msg, "") << msg;
+}
+
+TEST(HypergraphTest, ReportRemappingSaysSoOnlyWhenItHappened) {
+    std::vector<std::vector<int> > remapped = {{1,2},{2,3}};
+    std::string msg = capture_stderr([&]{ Hypergraph h(remapped); h.report_remapping(); });
+    EXPECT_NE(msg.find("renumbered"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("not the input ids"), std::string::npos) << msg;
+
+    std::vector<std::vector<int> > contiguous = {{0,1},{1,2}};
+    msg = capture_stderr([&]{ Hypergraph h(contiguous); h.report_remapping(); });
+    EXPECT_EQ(msg, "") << msg;
+}
+
+// The sized constructors take n from the caller, so they cannot renumber to
+// fit without silently changing what the results mean. Out-of-range ids are
+// rejected rather than remapped or accommodated.
+TEST(HypergraphTest, SizedConstructorsRejectOutOfRangeIds) {
+    std::vector<std::vector<int> > input = {{0,1},{1,900}};
+    EXPECT_THROW(Hypergraph(input, 3), std::out_of_range);
+    EXPECT_THROW(Hypergraph(input, 3, 2), std::out_of_range);
+
+    std::vector<std::vector<int> > negative = {{0,-1}};
+    EXPECT_THROW(Hypergraph(negative, 3), std::out_of_range);
+}
+
+// Sparse but in-range ids are legitimate: these constructors exist partly to
+// support isolated nodes.
+TEST(HypergraphTest, SizedConstructorsAcceptSparseInRangeIds) {
+    std::vector<std::vector<int> > input = {{0,2},{2,4}};
+    EXPECT_NO_THROW({
+        Hypergraph h(input, 5);
+        EXPECT_EQ(h.n, 5);
+        EXPECT_EQ(h.hyperedges[0], (std::vector<int>{0,2}));
+        EXPECT_TRUE(h.node_memberships.contains(1));   // isolated node kept
+        EXPECT_TRUE(h.node_memberships[1].empty());
+    });
+}
+
+// The error must name the offending id and point at the remapping constructor.
+TEST(HypergraphTest, OutOfRangeErrorIsActionable) {
+    std::vector<std::vector<int> > input = {{0,1},{1,900}};
+    try {
+        Hypergraph h(input, 3);
+        FAIL() << "expected throw";
+    } catch (const std::out_of_range &e) {
+        std::string what = e.what();
+        EXPECT_NE(what.find("900"), std::string::npos) << what;
+        EXPECT_NE(what.find("single-argument"), std::string::npos) << what;
+    }
 }

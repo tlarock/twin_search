@@ -30,8 +30,28 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# IMPORTANT: none of these define NDEBUG, and that is deliberate.
+#
+# Boost uBLAS bounds-checks every matrix access through BOOST_UBLAS_CHECK
+# unless NDEBUG is defined, and that check is the last line of defence against
+# an out-of-range write to a projection matrix. Adding -DNDEBUG - which is what
+# CMake's own stock Release flags do, and is the obvious thing to "tidy up"
+# here - silently turns every one of those checks off across the whole
+# codebase, converting a loud bad_index exception into silent heap corruption.
+# It was verified that an out-of-range node id throws at -O3 as written and
+# corrupts memory at -O3 -DNDEBUG.
+#
+# If you want NDEBUG for speed, measure it first and add explicit bounds checks
+# at the matrix accesses that matter, rather than relying on uBLAS.
+#
+# NOTE: these assignments also REPLACE the flags CMake would otherwise supply
+# for each build type, so anything added here is the complete set. That is why
+# sanitizer builds have to pass their flags through CMAKE_CXX_FLAGS with a
+# build type this file does not name; see docker/run.sh.
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -Wextra -Wpedantic")
 set(CMAKE_CXX_FLAGS_DEBUG "-O0 -Wall -Wextra -Wpedantic -g")
+# NOTE: -O0 here is almost certainly a mistake for a "with debug info" build,
+# but changing it would silently change the performance of anyone using it.
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O0 -Wall -Wextra -Wpedantic -g")
 
 # Sets current directory to receive the executables
