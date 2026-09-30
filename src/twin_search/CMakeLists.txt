@@ -8,11 +8,11 @@ add_executable(count_twins_random count_twins_random.cpp twin_search.cpp $<TARGE
 
 add_executable(exhaustive_search_projections exhaustive_search_projections.cpp twin_search.cpp $<TARGET_OBJECTS:objlib>)
 
-add_executable(real_data_mates real_data_twins.cpp twin_search.cpp $<TARGET_OBJECTS:objlib>)
+add_executable(real_data_twins real_data_twins.cpp twin_search.cpp $<TARGET_OBJECTS:objlib>)
 
 add_executable(exact_mates exact_mates.cpp twin_search.cpp $<TARGET_OBJECTS:objlib>)
 
 target_link_libraries(count_twins_random PRIVATE TBB::tbb ${Boost_LIBRARIES})
 target_link_libraries(exhaustive_search_projections PRIVATE TBB::tbb ${Boost_LIBRARIES})
-target_link_libraries(real_data_mates PRIVATE TBB::tbb ${Boost_LIBRARIES})
+target_link_libraries(real_data_twins PRIVATE TBB::tbb ${Boost_LIBRARIES})
 target_link_libraries(exact_mates PRIVATE TBB::tbb ${Boost_LIBRARIES})
