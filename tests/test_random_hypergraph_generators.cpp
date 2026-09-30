@@ -248,3 +248,70 @@ TEST(SeedingTest, UnseededOverloadsStillProduceValidHypergraphs) {
     for (const auto &[idx, he] : h.hyperedges)
         EXPECT_EQ(he.size(), 3u);
 }
+
+// ---------------------------------------------------------------------------
+// The bound on m in sample_uniform_random.
+//
+// The generator is unconditionally k-uniform, so the pool it draws from is the
+// k-subsets of n and the bound on m is binom(n, k). These tests exist to catch
+// two specific regressions:
+//
+//   * widening the bound towards sum_j binom(n, j) to "support" non-uniform
+//     runs. min_k / max_k belong to the mate search; asking this loop for more
+//     k-subsets than exist never terminates. NOTE this regression shows up as
+//     MoreHyperedgesThanKSubsetsIsRejected HANGING, not failing - measured, it
+//     was still spinning after 20s. A hung test in this file means the bound.
+//   * restoring the old binom(binom(n, k), m) form, which is the count of
+//     possible HYPERGRAPHS. That rejects exactly m == binom(n, k) and returns
+//     an empty hypergraph, which downstream still writes as a valid-looking
+//     output row - a silent wrong answer rather than an error.
+// ---------------------------------------------------------------------------
+
+TEST(UniformHypergraphBoundTest, CompleteKUniformHypergraphIsSamplable) {
+    // m == binom(n, k): degenerate but valid. There is exactly one such
+    // hypergraph - every k-subset present - so the result is deterministic.
+    const int n = 6, k = 4;
+    const int m = static_cast<int>(binom(n, k));   // 15
+    ASSERT_EQ(m, 15);
+
+    Hypergraph h = sample_uniform_random(n, m, k);
+    EXPECT_EQ(h.hyperedges.size(), static_cast<std::size_t>(m));
+
+    std::set<std::vector<int> > distinct;
+    std::set<int> covered;
+    for (const auto& [he_idx, he] : h.hyperedges) {
+        EXPECT_EQ(he.size(), static_cast<std::size_t>(k));
+        distinct.insert(he);
+        for (int u : he)
+            covered.insert(u);
+    }
+    // Every hyperedge distinct, and together they are ALL the k-subsets.
+    EXPECT_EQ(distinct.size(), static_cast<std::size_t>(m));
+    EXPECT_EQ(covered.size(), static_cast<std::size_t>(n));
+}
+
+TEST(UniformHypergraphBoundTest, MoreHyperedgesThanKSubsetsIsRejected) {
+    const int n = 6, k = 4;
+    const int too_many = static_cast<int>(binom(n, k)) + 1;   // 16
+    Hypergraph h = sample_uniform_random(n, too_many, k);
+    EXPECT_TRUE(h.hyperedges.empty());
+}
+
+TEST(UniformHypergraphBoundTest, BoundIsBinomNChooseKAcrossShapes) {
+    // m == binom(n, k) must succeed and m == binom(n, k) + 1 must be rejected,
+    // for every shape - not just the one that exposed the bug.
+    const std::vector<std::pair<int, int> > shapes = {
+        {5, 2}, {5, 3}, {6, 3}, {6, 4}, {7, 5}, {8, 6}
+    };
+    for (const auto& [n, k] : shapes) {
+        const int limit = static_cast<int>(binom(n, k));
+
+        Hypergraph at_limit = sample_uniform_random(n, limit, k);
+        EXPECT_EQ(at_limit.hyperedges.size(), static_cast<std::size_t>(limit))
+            << "n=" << n << " k=" << k << " m=" << limit << " should be samplable";
+
+        Hypergraph past_limit = sample_uniform_random(n, limit + 1, k);
+        EXPECT_TRUE(past_limit.hyperedges.empty())
+            << "n=" << n << " k=" << k << " m=" << limit + 1 << " should be rejected";
+    }
+}

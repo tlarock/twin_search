@@ -401,9 +401,29 @@ int main(int argc, char *argv[]) {
     // nCk < m (not enough possible hyperedges)
     if (!config_model) {
         num_hyperedges = binom(n, k);
-        if (num_hyperedges <= m) {
+        // INVALID: more hyperedges requested than distinct k-subsets exist.
+        // Strictly less-than. This was <=, which also rejected m == binom(n, k)
+        // and printed the self-evidently false "15 < 15".
+        if (num_hyperedges < m) {
             std::cout << "Number of hyperedges binom(n = " << n << ", k = " << k << ") < m (" << num_hyperedges << " < " << m << "). Exiting." << std::endl;
             return 0;
+        }
+        // DEGENERATE BUT VALID: m == binom(n, k) is the complete k-uniform
+        // hypergraph, and it is the ONLY one. Every sample is the same
+        // hypergraph, so the run has an effective sample size of 1 however
+        // many --samples are asked for. Say so, because a file of N identical
+        // rows is otherwise indistinguishable from N independent draws.
+        //
+        // It is still worth running when min_k < max_k: the sample is fixed,
+        // but its projection is the complete graph K_n, which is the densest
+        // input the mate search can be given and hence the largest twin set.
+        // With min_k == max_k == k the answer is analytic - exactly one twin -
+        // and sampling it tells you nothing.
+        if (num_hyperedges == m) {
+            std::cout << "Note: m == binom(n = " << n << ", k = " << k << ") == "
+                      << m << ". The complete k-uniform hypergraph is the only "
+                      << "sample; all " << num_samples << " rows will be identical "
+                      << "(effective sample size 1)." << std::endl;
         }
     }
 
