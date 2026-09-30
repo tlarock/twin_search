@@ -250,21 +250,16 @@ TEST(SeedingTest, UnseededOverloadsStillProduceValidHypergraphs) {
 }
 
 // ---------------------------------------------------------------------------
-// The bound on m in sample_uniform_random.
+// The bound on m in sample_uniform_random is binom(n, k).
 //
-// The generator is unconditionally k-uniform, so the pool it draws from is the
-// k-subsets of n and the bound on m is binom(n, k). These tests exist to catch
-// two specific regressions:
+// Two regressions these catch:
 //
-//   * widening the bound towards sum_j binom(n, j) to "support" non-uniform
-//     runs. min_k / max_k belong to the mate search; asking this loop for more
-//     k-subsets than exist never terminates. NOTE this regression shows up as
-//     MoreHyperedgesThanKSubsetsIsRejected HANGING, not failing - measured, it
-//     was still spinning after 20s. A hung test in this file means the bound.
-//   * restoring the old binom(binom(n, k), m) form, which is the count of
-//     possible HYPERGRAPHS. That rejects exactly m == binom(n, k) and returns
-//     an empty hypergraph, which downstream still writes as a valid-looking
-//     output row - a silent wrong answer rather than an error.
+//   * binom(binom(n, k), m), the count of possible HYPERGRAPHS. Rejects
+//     exactly m == binom(n, k) and returns an empty hypergraph, which still
+//     writes as a valid-looking output row - a silent wrong answer.
+//   * any bound larger than binom(n, k). Asking the collection loop for more
+//     k-subsets than exist never terminates, so this shows up as
+//     MoreHyperedgesThanKSubsetsIsRejected HANGING rather than failing.
 // ---------------------------------------------------------------------------
 
 TEST(UniformHypergraphBoundTest, CompleteKUniformHypergraphIsSamplable) {

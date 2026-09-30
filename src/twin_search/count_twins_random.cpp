@@ -408,17 +408,9 @@ int main(int argc, char *argv[]) {
             std::cout << "Number of hyperedges binom(n = " << n << ", k = " << k << ") < m (" << num_hyperedges << " < " << m << "). Exiting." << std::endl;
             return 0;
         }
-        // DEGENERATE BUT VALID: m == binom(n, k) is the complete k-uniform
-        // hypergraph, and it is the ONLY one. Every sample is the same
-        // hypergraph, so the run has an effective sample size of 1 however
-        // many --samples are asked for. Say so, because a file of N identical
-        // rows is otherwise indistinguishable from N independent draws.
-        //
-        // It is still worth running when min_k < max_k: the sample is fixed,
-        // but its projection is the complete graph K_n, which is the densest
-        // input the mate search can be given and hence the largest twin set.
-        // With min_k == max_k == k the answer is analytic - exactly one twin -
-        // and sampling it tells you nothing.
+        // Degenerate but valid: the complete k-uniform hypergraph is the only
+        // sample, so every row is identical whatever --samples says. Worth
+        // stating, because N identical rows otherwise look like N draws.
         if (num_hyperedges == m) {
             std::cout << "Note: m == binom(n = " << n << ", k = " << k << ") == "
                       << m << ". The complete k-uniform hypergraph is the only "

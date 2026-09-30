@@ -31,23 +31,6 @@ Hypergraph sample_uniform_random(int n, int m, int k, std::mt19937 &generator)
         return Hypergraph(std::vector<std::vector<int> > (0));
     }
     // Validate input: there must be at least m distinct hyperedges available.
-    //
-    // THE BOUND IS binom(n, k) AND MUST STAY THAT WAY. This generator is
-    // unconditionally k-uniform - sample_hyperedge below returns exactly k
-    // distinct nodes - so the pool it draws from is the k-subsets of n, and
-    // nothing else. min_k / max_k belong to the MATE SEARCH, not to
-    // generation; widening this bound to sum_j binom(n, j) to "support" the
-    // non-uniform case would ask the loop below for more k-subsets than exist
-    // and it would never terminate. A non-uniform hypergraph reaches this
-    // program only as a twin the search finds, never as a sample.
-    //
-    // This previously read binom(binom(n, k), m): the number of possible
-    // HYPERGRAPHS, not of hyperedges. It only misfires at m == binom(n, k),
-    // where it is binom(N, N) == 1 and every m > 1 is rejected - because for
-    // 1 <= m <= N-1, binom(N, m) >= N > m always. That case was unreachable
-    // behind the caller's own off-by-one guard, and when the guard was fixed
-    // it returned an EMPTY hypergraph that still parsed as a valid output row.
-    //
     // m == binom(n, k) is the complete k-uniform hypergraph: degenerate, since
     // the sample space has exactly one element, but valid.
     double max_edges = binom(n, k);
