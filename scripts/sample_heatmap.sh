@@ -22,8 +22,16 @@
 # m=15 is the complete 4-uniform hypergraph - a single hypergraph, so 1000
 # draws give an effective sample size of 1 and p is identically 0.
 #
+# COST. Most cells are trivial - every k=3 cell is under a second - but a
+# handful of k=4 cells are not, and they are hard to predict from n and m
+# alone. Measured here: n=16 m=16 is 2.4s, n=8 m=16 is 213s, and n=9 m=15 had
+# not finished after 6.5 minutes. Density (m / C(n,k)) explains some of it but
+# not all: n=8 m=16 is denser than n=9 m=15 and far quicker, so the size of the
+# projection matters independently. Cells over MAX_SECONDS are skipped and
+# recorded rather than waited on; raise it if you want the expensive tail.
+#
 # Env: N_MIN/N_MAX/M_MIN/M_MAX (6/16/6/16), SAMPLES (1000), SEED,
-#      MAX_THREADS (6), MAX_SECONDS (3600), MAX_RSS_MB (12000),
+#      MAX_THREADS (6), MAX_SECONDS (600), MAX_RSS_MB (12000),
 #      OUTPUT_DIR, DRY_RUN=1
 
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -33,7 +41,7 @@ KS=( "${@:-3 4}" )
 N_MIN="${N_MIN:-6}";  N_MAX="${N_MAX:-16}"
 M_MIN="${M_MIN:-6}";  M_MAX="${M_MAX:-16}"
 SAMPLES="${SAMPLES:-1000}"
-MAX_SECONDS="${MAX_SECONDS:-3600}"
+MAX_SECONDS="${MAX_SECONDS:-600}"
 MAX_RSS_MB="${MAX_RSS_MB:-12000}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO/results/reproduce/heatmap-$SAMPLES}"
 
@@ -74,6 +82,7 @@ for k in "${KS[@]}"; do
         if [[ "$DRY_RUN" == 1 ]]; then echo "  DRY RUN: ${cmd[*]}"; continue; fi
 
         printf '  k=%s n=%-3s m=%-3s ' "$k" "$n" "$m"
+        guard_output "$out"
         if run_guarded "$MAX_SECONDS" "$MAX_RSS_MB" "${cmd[@]}"; then
             printf '%8s  %5sMB\n' "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
             log_cell ok "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
@@ -83,6 +92,7 @@ for k in "${KS[@]}"; do
             rm -f "$out"
             log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
         fi
+        clear_output
     done
   done
 done

@@ -65,6 +65,7 @@ for n in "${NS[@]}"; do
         if [[ "$DRY_RUN" == 1 ]]; then echo "    DRY RUN: ${cmd[*]}"; continue; fi
 
         printf '    m=%-3s ' "$m"
+        guard_output "$out"
         if run_guarded "$MAX_SECONDS" "$MAX_RSS_MB" "${cmd[@]}"; then
             printf '%8s  %5sMB\n' "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
             log_cell ok "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
@@ -84,6 +85,7 @@ for n in "${NS[@]}"; do
                 break
             fi
         fi
+        clear_output
     done
 done
 

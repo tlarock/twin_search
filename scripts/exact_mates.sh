@@ -55,6 +55,7 @@ for in_file in "${inputs[@]}"; do
     if [[ "$DRY_RUN" == 1 ]]; then echo "  DRY RUN: ${cmd[*]}"; continue; fi
 
     printf '  %-56s ' "$(basename "$in_file")"
+    guard_output "$out"
     if run_guarded "$MAX_SECONDS" "$MAX_RSS_MB" "${cmd[@]}"; then
         printf '%8s  %5sMB  %s pair-rows\n' \
             "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$(wc -l < "$out" | tr -d ' ')"
@@ -65,6 +66,7 @@ for in_file in "${inputs[@]}"; do
         rm -f "$out"
         log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
     fi
+    clear_output
 done
 
 echo

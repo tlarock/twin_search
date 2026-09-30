@@ -12,6 +12,10 @@
 #   run_guarded <secs> <mb> <cmd...>
 #                               - run with wall-clock and peak-RSS limits,
 #                                 killing the job rather than the machine
+#   guard_output <file>         - name the file the current cell is writing, so
+#                                 an interrupt deletes it instead of leaving a
+#                                 truncated file a later resume would skip
+#   clear_output                - the cell finished; nothing to clean up
 #   nCk <n> <k>                 - binomial coefficient
 #   human <seconds>             - pretty-print a duration
 
@@ -80,6 +84,34 @@ log_cell() {
     [[ -n "$MANIFEST" ]] && printf '%s\t%s\t%s\t%s\t%s\n' "$@" >> "$MANIFEST"
 }
 
+# The output file the current cell is writing, if any.
+#
+# These drivers append as they go, so a run killed from outside - Ctrl-C, or a
+# `pkill` aimed at the script - leaves a partial file behind. Because cells are
+# skipped when their output already exists, that partial file would be silently
+# accepted as finished by the next run. So an interrupt must delete it. The
+# in-cell guards in run_guarded handle the limits they enforce themselves; this
+# trap covers everything else.
+CURRENT_OUTPUT=""
+RG_PID=""
+
+guard_output() { CURRENT_OUTPUT="$1"; }
+clear_output()  { CURRENT_OUTPUT=""; }
+
+_on_interrupt() {
+    trap - INT TERM
+    [[ -n "$RG_PID" ]] && kill -9 "$RG_PID" 2>/dev/null
+    if [[ -n "$CURRENT_OUTPUT" && -e "$CURRENT_OUTPUT" ]]; then
+        echo >&2
+        echo "interrupted: removing incomplete $CURRENT_OUTPUT" >&2
+        rm -f "$CURRENT_OUTPUT"
+    fi
+    [[ -n "${MANIFEST:-}" ]] && printf 'interrupted\t0\t0\t%s\t-\n' \
+        "$(basename "${CURRENT_OUTPUT:-none}")" >> "$MANIFEST"
+    exit 130
+}
+trap _on_interrupt INT TERM
+
 # run_guarded <max_seconds> <max_rss_mb> <command...>
 #
 # Runs the command in the background and polls it once a second, killing it if
@@ -93,6 +125,7 @@ run_guarded() {
     start=$(date +%s)
     "$@" >/dev/null 2>&1 &
     pid=$!
+    RG_PID=$pid
 
     RG_STATUS=ok
     while kill -0 "$pid" 2>/dev/null; do
@@ -110,6 +143,7 @@ run_guarded() {
     wait "$pid" 2>/dev/null; rc=$?
     [[ "$RG_STATUS" == ok && $rc -ne 0 ]] && RG_STATUS=failed
 
+    RG_PID=""
     RG_SECONDS=$(( $(date +%s) - start ))
     RG_PEAK_MB=$(( peak / 1024 ))
     [[ "$RG_STATUS" == ok ]]

@@ -64,6 +64,7 @@ for (( m = M_MIN; m <= M_MAX; m++ )); do
     printf '  m=%-3s ' "$m"
     # The driver appends, so a killed cell must not leave a partial file behind
     # for the next run to mistake for a finished one.
+    guard_output "$out"
     if run_guarded "$MAX_SECONDS" "$MAX_RSS_MB" "${cmd[@]}"; then
         printf '%8s  %5sMB  %s projections\n' \
             "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$(wc -l < "$out" | tr -d ' ')"
@@ -74,6 +75,7 @@ for (( m = M_MIN; m <= M_MAX; m++ )); do
         rm -f "$out"
         log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
     fi
+    clear_output
 done
 
 echo

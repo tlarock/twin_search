@@ -40,7 +40,10 @@ with it. macOS has no `timeout(1)` and no working `ulimit -v`, which is why
 `run_guarded` in `common.sh` polls by hand.
 
 **Runs are resumable.** A cell whose output already exists is skipped, so an
-interrupted run can simply be restarted.
+interrupted run can simply be restarted. Because these drivers append as they
+go, an interrupt would otherwise leave a truncated file that the next run would
+mistake for a finished one, so Ctrl-C deletes the in-flight output and records
+the cell as `interrupted`.
 
 **Every run writes a manifest.** `RUN_MANIFEST.tsv` in the output directory
 records the git commit, whether the tree was dirty, the host, thread count and
@@ -69,8 +72,22 @@ Peak RSS roughly doubles per step above m=12, so m=15 is around 17 GB and m=16
 around 34 GB. **m=2..14 is about 12 minutes in total**; beyond that memory, not
 time, is the binding constraint. The default range stops at m=13.
 
-**Heatmap sampling.** Cheap. The worst cell measured (k=4, n=16, m=16, 1000
-samples) is 2.4s; k=3 cells are under 0.1s.
+**Heatmap sampling.** Mostly cheap, with an awkward tail. Every k=3 cell is
+under a second. k=4 is uneven and not predictable from n and m alone:
+
+| cell (k=4, 1000 samples) | time |
+|---|---|
+| n=16 m=16 | 2.4s |
+| n=9 m=13 | 43s |
+| n=8 m=15 | 88s |
+| n=8 m=16 | 213s |
+| n=9 m=15 | > 6.5 min (skipped) |
+
+Density (`m / C(n,k)`) explains part of this - the n=m diagonal is *cheap*
+because at k=4, n=16 there are C(16,4)=1820 possible hyperedges, so 16 of them
+is very sparse - but not all of it: n=8 m=16 is denser than n=9 m=15 and much
+quicker, so the size of the projection matters independently. Do not try to
+predict cost; let `MAX_SECONDS` skip what is too slow and read the manifest.
 
 **Density sampling.** The expensive one. Cost climbs steeply with `m`:
 n=9 m=20 is 7s, but n=9 m=40 had not finished after 10 minutes. The dense tail
