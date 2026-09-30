@@ -1,0 +1,23 @@
+# Build tree, including the conan-generated configuration.
+build/
+
+# Generated results. Reproduce them with the scripts in scripts/; each run
+# writes a RUN_MANIFEST.tsv recording the commit, seed and exact commands.
+# Data belongs in a deposit, not in git.
+results/
+
+# Source archives and consolidated datasets
+*.tar.gz
+*.tar.zst
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+
+# macOS
+.DS_Store
+
+# conan writes this per-user; it points at build/CMakePresets.json
+CMakeUserPresets.json
