@@ -61,10 +61,24 @@ human() {
 }
 
 MANIFEST=""
+
+# Begin a provenance block for this run.
+#
+# APPENDS rather than truncates. Runs are resumable, so a directory is often
+# filled by several invocations; truncating would throw away the timings of
+# every cell an earlier run completed and replace them with "skipped 0s". The
+# file is therefore a log of runs, each introduced by its own "# ---" header.
 start_manifest() {
     MANIFEST="$1"
+    shift
     mkdir -p "$(dirname "$MANIFEST")"
+    # Decide this BEFORE the block below starts writing: its first echo makes
+    # the file non-empty, so testing -s inside the block always says "resuming".
+    local resuming=0
+    [[ -s "$MANIFEST" ]] && resuming=1
     {
+        (( resuming )) && printf '\n'
+        echo "# --------------------------------------------------------------"
         echo "# twin_search reproduction run"
         echo "# date_utc      $(date -u +%Y-%m-%dT%H:%M:%SZ)"
         echo "# git_commit    $(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -76,8 +90,9 @@ start_manifest() {
         echo "# script        $(basename "${BASH_SOURCE[1]:-?}")"
         echo "# argv          $*"
         printf '#\n'
-        printf 'status\tseconds\tpeak_rss_mb\toutput\tcommand\n'
-    } > "$MANIFEST"
+        # Column header only on a fresh file; a resumed run just adds rows.
+        (( resuming )) || printf 'status\tseconds\tpeak_rss_mb\toutput\tcommand\n'
+    } >> "$MANIFEST"
 }
 
 log_cell() {
