@@ -19,9 +19,20 @@ elseif (CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
     message(STATUS "Build type RelWithDebugInfo")
 endif()
 
-set(CMAKE_CXX_FLAGS_RELEASE "-std=c++23 -O3 -Wall -Wextra -Wpedantic")
-set(CMAKE_CXX_FLAGS_DEBUG "-std=c++23 -O0 -Wall -Wextra -Wpedantic -g")
-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-std=c++23 -O0 -Wall -Wextra -Wpedantic -g")
+# Declare the C++ standard as a CMake property rather than as an explicit -std
+# flag in CMAKE_CXX_FLAGS_*. A toolchain file can set CMAKE_CXX_STANDARD itself
+# - conan's sets it from the profile's compiler.cppstd - and CMake appends the
+# matching -std flag AFTER CMAKE_CXX_FLAGS_*, so a hand-written -std there is
+# silently overridden by the last flag on the command line. With the default
+# conan profile (compiler.cppstd=gnu17) that produced
+# "-std=c++23 ... -std=gnu++17", building this C++20/23 code as C++17.
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -Wextra -Wpedantic")
+set(CMAKE_CXX_FLAGS_DEBUG "-O0 -Wall -Wextra -Wpedantic -g")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O0 -Wall -Wextra -Wpedantic -g")
 
 # Sets current directory to receive the executables
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY  ${CMAKE_BINARY_DIR})
