@@ -21,3 +21,7 @@ __pycache__/
 
 # conan writes this per-user; it points at build/CMakePresets.json
 CMakeUserPresets.json
+
+# Cluster run-harness scripts. Machine-specific job plumbing for one SLURM
+# site, not part of the reproduction pipeline - that lives in scripts/.
+slurm-scripts/
