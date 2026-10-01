@@ -88,8 +88,8 @@ while IFS=$'\t' read -r k n m est cum note <&3; do
           --min-k "$k" --max-k "$k" --seed "$SEED"
           --max-threads "$MAX_THREADS" --output-path "$OUTPUT_DIR/" )
 
-    if [[ -s "$out" ]]; then
-        have=$(wc -l < "$out" | tr -d ' ')
+    have=$(rows_in "$out")
+    if (( have > 0 )); then
         if (( have >= SAMPLES )); then
             log_cell skipped 0 0 "$(basename "$out")" "${cmd[*]}"
             n_skip=$((n_skip+1)); continue
@@ -127,32 +127,22 @@ while IFS=$'\t' read -r k n m est cum note <&3; do
         printf 'took %8s  %5sMB\n' "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
         log_cell ok "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
         n_ok=$((n_ok+1))
-    elif [[ "$RG_STATUS" == timeout && -s "$out" ]]; then
-        # Keep what it managed. Drop a torn final row first: std::endl writes
-        # the newline last, so a file not ending in one was cut mid-row.
-        if [[ -n "$(tail -c 1 "$out")" ]]; then
-            sed '$d' "$out" > "$out.tmp" && mv "$out.tmp" "$out"
-        fi
-        have=$(wc -l < "$out" | tr -d ' ')
-        if (( have == 0 )); then
-            # Cap hit before a single sample finished; nothing worth keeping.
-            rm -f "$out"
-            printf 'took %8s  %5sMB  capped with 0 samples -- removed\n' \
-                "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
-            log_cell timeout "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
-            n_fail=$((n_fail+1))
-        else
-            printf 'took %8s  %5sMB  capped at %s/%s samples -- KEPT\n' \
-                "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$have" "$SAMPLES"
+    else
+        # Keep whatever samples completed; only the row in flight is lost.
+        trim_torn_line "$out"
+        have=$(rows_in "$out")
+        if (( have > 0 )); then
+            printf 'took %8s  %5sMB  %s at %s/%s samples -- KEPT\n' \
+                "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS" "$have" "$SAMPLES"
             log_cell partial "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
             n_part=$((n_part+1))
+        else
+            printf 'took %8s  %5sMB  %s with 0 samples\n' \
+                "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS"
+            rm -f "$out"
+            log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
+            n_fail=$((n_fail+1))
         fi
-    else
-        printf 'took %8s  %5sMB  %s -- removing output\n' \
-            "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS"
-        rm -f "$out"
-        log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
-        n_fail=$((n_fail+1))
     fi
     clear_output
 done 3< "$LIST"

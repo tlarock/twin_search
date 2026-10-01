@@ -75,8 +75,18 @@ for k in "${KS[@]}"; do
               --min-k "$k" --max-k "$k" --seed "$SEED"
               --max-threads "$MAX_THREADS" --output-path "$OUTPUT_DIR/" )
 
-        if [[ -s "$out" ]]; then
+        have=$(rows_in "$out")
+        if (( have >= SAMPLES )); then
             log_cell skipped 0 0 "$(basename "$out")" "${cmd[*]}"
+            continue
+        fi
+        if (( have > 0 )); then
+            # A short cell from a run that was cut off. Left alone rather than
+            # redone: resuming needs --append --start-sample, but rows carry no
+            # sample index, so the correct restart point cannot be recovered
+            # from the file, and redoing from scratch discards what is there.
+            echo "  k=$k n=$n m=$m  present but short ($have/$SAMPLES) -- left as is"
+            log_cell short "$have" 0 "$(basename "$out")" "${cmd[*]}"
             continue
         fi
         if [[ "$DRY_RUN" == 1 ]]; then echo "  DRY RUN: ${cmd[*]}"; continue; fi
@@ -87,10 +97,19 @@ for k in "${KS[@]}"; do
             printf '%8s  %5sMB\n' "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
             log_cell ok "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
         else
-            printf '%8s  %5sMB  %s -- removing partial output\n' \
-                "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS"
-            rm -f "$out"
-            log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
+            # Keep whatever samples completed; only the row in flight is lost.
+            trim_torn_line "$out"
+            have=$(rows_in "$out")
+            if (( have > 0 )); then
+                printf '%8s  %5sMB  %s at %s/%s samples -- KEPT\n' \
+                    "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS" "$have" "$SAMPLES"
+                log_cell partial "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
+            else
+                printf '%8s  %5sMB  %s with 0 samples\n' \
+                    "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS"
+                rm -f "$out"
+                log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
+            fi
         fi
         clear_output
     done

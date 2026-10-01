@@ -61,9 +61,23 @@ for in_file in "${inputs[@]}"; do
             "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$(wc -l < "$out" | tr -d ' ')"
         log_cell ok "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
     else
-        printf '%8s  %5sMB  %s -- removing partial output\n' \
-            "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS"
-        rm -f "$out"
+        # This is an exhaustive ENUMERATION, not a sample, so the two cases
+        # differ: n rows of a sample are n valid independent draws, but n rows
+        # of a truncated enumeration are a prefix, and nothing in the file says
+        # how many rows there should have been. Keeping it under the real name
+        # would let a later run skip it as finished. So it is preserved under
+        # .partial - nothing is destroyed, and the cell correctly re-runs.
+        trim_torn_line "$out"
+        rows=$(rows_in "$out")
+        if (( rows > 0 )); then
+            mv "$out" "$out.partial-${rows}rows"
+            printf '%8s  %5sMB  %s -- kept %s rows as .partial-%srows\n' \
+                "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS" "$rows" "$rows"
+        else
+            rm -f "$out"
+            printf '%8s  %5sMB  %s -- no rows written\n' \
+                "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS"
+        fi
         log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
     fi
     clear_output

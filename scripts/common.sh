@@ -13,8 +13,10 @@
 #                               - run with wall-clock and peak-RSS limits,
 #                                 killing the job rather than the machine
 #   guard_output <file>         - name the file the current cell is writing, so
-#                                 an interrupt deletes it instead of leaving a
-#                                 truncated file a later resume would skip
+#                                 an interrupt can tidy it rather than leaving
+#                                 a torn row behind
+#   rows_in <file>              - completed samples in a results file, 0 if absent
+#   trim_torn_line <file>       - drop a final row cut off mid-write
 #   clear_output                - the cell finished; nothing to clean up
 #   nCk <n> <k>                 - binomial coefficient
 #   human <seconds>             - pretty-print a duration
@@ -110,19 +112,55 @@ log_cell() {
 CURRENT_OUTPUT=""
 RG_PID=""
 
+# Completed samples in a results file. The drivers write exactly one row per
+# sample, so this is the sample count - which is what "is this cell done?" must
+# ask. Testing -s only asks "did anything get written", which silently accepts
+# a cell that stopped after one sample.
+rows_in() {
+    [[ -s "$1" ]] || { echo 0; return; }
+    wc -l < "$1" | tr -d ' '
+}
+
+# Drop a final row that was cut off mid-write.
+#
+# Each row is written under a lock and terminated by std::endl, which flushes,
+# so a file ending in a newline has only complete rows. If it does not end in
+# one, the process died partway through writing the last row; everything before
+# the last newline is intact. A file left with nothing at all is removed, so
+# that -s and rows_in agree it is absent.
+trim_torn_line() {
+    local f="$1"
+    [[ -s "$f" ]] || return 0
+    if [[ -n "$(tail -c 1 "$f")" ]]; then
+        sed '$d' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    fi
+    [[ -s "$f" ]] || rm -f "$f"
+}
+
 guard_output() { CURRENT_OUTPUT="$1"; }
 clear_output()  { CURRENT_OUTPUT=""; }
 
 _on_interrupt() {
     trap - INT TERM
     [[ -n "$RG_PID" ]] && kill -9 "$RG_PID" 2>/dev/null
+    # KEEP what the cell managed. Every completed sample is already on disk;
+    # only the row in flight is lost. Deleting the file threw away real work -
+    # on 2026-09-30 a TERM at a harness time limit destroyed ~850 samples of
+    # k=4 n=10 m=16 that had taken 70 minutes. Callers decide what to do with a
+    # short cell by asking rows_in, not by testing existence.
+    local kept=0
     if [[ -n "$CURRENT_OUTPUT" && -e "$CURRENT_OUTPUT" ]]; then
+        trim_torn_line "$CURRENT_OUTPUT"
+        kept=$(rows_in "$CURRENT_OUTPUT")
         echo >&2
-        echo "interrupted: removing incomplete $CURRENT_OUTPUT" >&2
-        rm -f "$CURRENT_OUTPUT"
+        if (( kept > 0 )); then
+            echo "interrupted: keeping $kept completed samples in $CURRENT_OUTPUT" >&2
+        else
+            echo "interrupted: no completed samples, removed $CURRENT_OUTPUT" >&2
+        fi
     fi
-    [[ -n "${MANIFEST:-}" ]] && printf 'interrupted\t0\t0\t%s\t-\n' \
-        "$(basename "${CURRENT_OUTPUT:-none}")" >> "$MANIFEST"
+    [[ -n "${MANIFEST:-}" ]] && printf 'interrupted\t0\t0\t%s\tkept=%s rows\n' \
+        "$(basename "${CURRENT_OUTPUT:-none}")" "$kept" >> "$MANIFEST"
     exit 130
 }
 trap _on_interrupt INT TERM
