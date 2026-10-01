@@ -103,9 +103,21 @@ while IFS=$'\t' read -r k n m est cum note <&3; do
         n_skip=$((n_skip+1)); continue
     fi
 
+    # A k-uniform hypergraph with m hyperedges spans at most m*k nodes, so a
+    # cell with m*k < n cannot exist on exactly n nodes. sample_uniform_random
+    # returns an empty hypergraph there, the caller rejects every draw, and
+    # after num_samples*10 rejections the run ends normally having written
+    # nothing - an empty file and exit 0, which this script used to record as
+    # ok. Caught up front instead, mirroring sample_heatmap.sh's m > C(n,k).
+    if (( m * k < n )); then
+        echo "  k=$k n=$n m=$m  impossible: m*k=$((m*k)) < n=$n, cannot span $n nodes"
+        log_cell impossible 0 0 "$(basename "$out")" "-"
+        n_over=$((n_over+1)); continue
+    fi
+
     # est is -1 where no published cell existed to estimate from. Those are
-    # m=1 and the near-complete cells, structurally trivial, so they run with
-    # the floor cap rather than being treated as unbounded.
+    # the near-complete cells, which are cheap because the twin set is nearly
+    # forced, so they run with the floor cap rather than being unbounded.
     if awk -v e="$est" -v l="$EST_LIMIT" 'BEGIN{exit !(e > l)}'; then
         echo "  k=$k n=$n m=$m  skipped: estimated $(human "${est%.*}") > limit"
         log_cell too-expensive 0 0 "$(basename "$out")" "${cmd[*]}"
@@ -124,9 +136,19 @@ while IFS=$'\t' read -r k n m est cum note <&3; do
         "$((n_ok+n_fail+1))" "$k" "$n" "$m" "$(human "${est%.*}")"
     guard_output "$out"
     if run_guarded "$cap" "$MAX_RSS_MB" "${cmd[@]}"; then
-        printf 'took %8s  %5sMB\n' "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
-        log_cell ok "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
-        n_ok=$((n_ok+1))
+        # Exit 0 does not imply data: a run whose every draw was rejected ends
+        # normally having written nothing. An empty result is not a result.
+        if (( $(rows_in "$out") == 0 )); then
+            rm -f "$out"
+            printf 'took %8s  %5sMB  exited 0 but wrote NO samples\n' \
+                "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
+            log_cell empty "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
+            n_fail=$((n_fail+1))
+        else
+            printf 'took %8s  %5sMB\n' "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
+            log_cell ok "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
+            n_ok=$((n_ok+1))
+        fi
     else
         # Keep whatever samples completed; only the row in flight is lost.
         trim_torn_line "$out"
