@@ -90,6 +90,7 @@ start_manifest() {
         echo "# max_threads   $MAX_THREADS"
         echo "# seed          $SEED"
         echo "# script        $(basename "${BASH_SOURCE[1]:-?}")"
+        echo "# dry_run       ${DRY_RUN:-0}"
         echo "# argv          $*"
         printf '#\n'
         # Column header only on a fresh file; a resumed run just adds rows.
@@ -97,8 +98,15 @@ start_manifest() {
     } >> "$MANIFEST"
 }
 
+# A dry run must not write rows. It walks the same loop and reaches the same
+# log_cell calls, so without this a DRY_RUN=1 invocation appends a full run
+# header plus a row per skipped cell, and a later tally of the manifest counts
+# cells that were never attempted. This happened: four dry runs of
+# run_density_ordered.sh inflated too-expensive from 61 to 244.
 log_cell() {
+    [[ "${DRY_RUN:-0}" == 1 ]] && return 0
     [[ -n "$MANIFEST" ]] && printf '%s\t%s\t%s\t%s\t%s\n' "$@" >> "$MANIFEST"
+    return 0
 }
 
 # The output file the current cell is writing, if any.
