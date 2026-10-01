@@ -1,3 +1,4 @@
+#include <array>
 #include "twin_search.hpp"
 #include <float.h>
 #include <algorithm>
@@ -346,24 +347,46 @@ std::vector<std::size_t> TwinSearch::default_edge_execution_order() {
 // Add an item to the stack, first checking whether it is a viable candidate
 // based on the remaining entries in curr.proj_rem. 
 void TwinSearch::add_to_stack(const TwinSearch::StackItem &curr, const std::vector<int> &comb, std::vector<TwinSearch::StackItem> &stack) {
-    // Copy curr.proj_rem to a new ublas::matrix
-    ProjMatT new_proj_rem(curr.proj_rem);
+    // Validate the candidate BEFORE copying anything.
+    //
+    // This function used to copy curr.proj_rem into a new ublas::matrix as its
+    // very first act, decrement entries in the copy, and bail out as soon as
+    // one went negative. In a search that prunes heavily most candidates are
+    // rejected, so the common path was: allocate a matrix, touch a few entries,
+    // discover the candidate is infeasible, free the matrix. That makes the
+    // allocator the contended resource under parallel search, which does not
+    // scale with threads however many are idle.
+    //
+    // The accepted set is unchanged. The old code rejected on the first entry
+    // to go negative; this accumulates the same decrements and rejects if any
+    // entry would finish below zero. For an entry starting at v and decremented
+    // d times both accept exactly when v - d >= 0. That includes the diagonal:
+    // "must be > 0 before each of d decrements" is the same condition.
+    //
+    // deltas is thread_local to keep its capacity across calls, which is the
+    // point - a plain local would allocate on first push_back every call. It
+    // carries no state between calls: it is cleared on entry, nothing escapes,
+    // and add_to_stack is a leaf, so it is never re-entered on one thread.
+    static thread_local std::vector<std::array<int, 3> > deltas;   // row, col, count
+    deltas.clear();
 
-    // Check whether the addition of any of the cliques in comb would over-use
-    // any edge (making proj_rem(edge) negative). If it would, then this
-    // combination is not viable so we will return without adding it to the stack.
-    std::vector<int> new_hypergraph;
-    std::vector<int> clique;
+    // Returns the running decrement count for (r, c) including this one.
+    auto bump = [](std::vector<std::array<int, 3> > &ds, int r, int c) -> int {
+        for (std::array<int, 3> &d : ds)
+            if (d[0] == r && d[1] == c)
+                return ++d[2];
+        ds.push_back({r, c, 1});
+        return 1;
+    };
+
     for (int cnode_id : comb) {
-        clique = fact.node_map.at(cnode_id);
+        // By reference: node_map.at() returned by value, copying a vector per
+        // clique per candidate.
+        const std::vector<int> &clique = fact.node_map.at(cnode_id);
         for (std::size_t i = 0; i < clique.size(); i++) {
             for (std::size_t j = i+1; j < clique.size(); j++) {
-                new_proj_rem(clique[i], clique[j]) -= 1;
-                new_proj_rem(clique[j], clique[i]) -= 1;
-                if ( new_proj_rem(clique[i], clique[j]) < 0 ) {
-                    // add nothing to the stack and return
+                if (curr.proj_rem(clique[i], clique[j]) - bump(deltas, clique[i], clique[j]) < 0)
                     return;
-                }
             }
 
             // If diagonals are non-zero, decrement
@@ -372,26 +395,28 @@ void TwinSearch::add_to_stack(const TwinSearch::StackItem &curr, const std::vect
             // because the matrix was 0-diagonal or because this entry should
             // be disallowed.
             if (use_diagonal) {
-                if ( new_proj_rem(clique[i], clique[i]) > 0 ) {
-                    new_proj_rem(clique[i], clique[i]) -= 1;
-                } else {
-                    // add nothing to the stack and return
+                if (curr.proj_rem(clique[i], clique[i]) - bump(deltas, clique[i], clique[i]) < 0)
                     return;
-                }
             }
         }
-        new_hypergraph.push_back(cnode_id);
     }
 
-    // Add existing edges to the new hypergraph
-    for (int cnode_id : curr.hypergraph) {
-        new_hypergraph.push_back(cnode_id);
+    // Viable, so now pay for the copy.
+    ProjMatT new_proj_rem(curr.proj_rem);
+    for (const std::array<int, 3> &d : deltas) {
+        new_proj_rem(d[0], d[1]) -= d[2];
+        if (d[0] != d[1])
+            new_proj_rem(d[1], d[0]) -= d[2];   // proj_rem is symmetric
     }
 
-    // Add a StackItem representing the new hypergraph and proj_rem
-    TwinSearch::StackItem to_add(new_hypergraph, new_proj_rem, curr.edge_execution_index+1);
+    std::vector<int> new_hypergraph;
+    new_hypergraph.reserve(comb.size() + curr.hypergraph.size());
+    for (int cnode_id : comb)
+        new_hypergraph.push_back(cnode_id);
+    for (int cnode_id : curr.hypergraph)
+        new_hypergraph.push_back(cnode_id);
 
-    stack.push_back(to_add);
+    stack.push_back(TwinSearch::StackItem(new_hypergraph, new_proj_rem, curr.edge_execution_index+1));
 }
 
 
