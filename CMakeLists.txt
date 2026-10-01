@@ -88,5 +88,12 @@ include_directories("../argparse/include")
 # Add the src directory and subsequent CMakeLists
 add_subdirectory(src)
 
-# Add the test drirectory
+# Testing must be enabled in the TOP-LEVEL CMakeLists, not in tests/. CMake
+# only writes a CTestTestfile.cmake into a directory at or below the one where
+# enable_testing() was called, so calling it in tests/ left the top of the
+# build tree with no CTestTestfile.cmake at all and `ctest` from build/
+# reporting "No tests were found!!!" while the suite was in fact green.
+enable_testing()
+
+# Add the test directory
 add_subdirectory(tests)
