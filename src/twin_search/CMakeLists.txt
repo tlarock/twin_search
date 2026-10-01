@@ -42,6 +42,15 @@ set(TWIN_SEARCH_DRIVERS
     real_data_twins
     exact_mates)
 
+if(TWIN_SEARCH_SCALABLE_ALLOC AND NOT TARGET TBB::tbbmalloc_proxy)
+    message(FATAL_ERROR
+        "TWIN_SEARCH_SCALABLE_ALLOC=ON but the target TBB::tbbmalloc_proxy does "
+        "not exist. The oneTBB package in use was built without its proxy "
+        "component. Check that conan resolved onetbb with the proxy enabled - "
+        "`grep COMPONENT_NAMES <build>/TBB-*-data.cmake` should list "
+        "TBB::tbbmalloc_proxy alongside TBB::tbb.")
+endif()
+
 if(TWIN_SEARCH_SCALABLE_ALLOC)
     message(STATUS "Scalable allocator ON (tbbmalloc_proxy linked into drivers)")
 else()
