@@ -14,6 +14,21 @@
 #   scripts/estimate_density_cost.py <published_dir>   # EMIT_LIST=order.tsv
 #   scripts/run_density_ordered.sh order.tsv
 #
+# A capped cell KEEPS its output. The driver writes one complete row per
+# sample under WriteMutex, terminated by std::endl, so every finished sample is
+# already on disk; killing the process loses only the sample in flight. The
+# published dataset itself has cells with 175-272 of 500 rows, so a short cell
+# is a usable figure point, not a failure. Only a torn final line needs
+# cleaning up, and that is detectable: endl writes the newline last, so a file
+# not ending in one has a partial row to drop.
+#
+# CAVEAT on a capped cell: rows carry no sample index, and samples complete out
+# of order, so the surviving rows are approximately an index prefix MINUS the
+# up-to-MAX_THREADS slow samples still running when the cap hit. Those are the
+# expensive ones, which in a heavy-tailed distribution are also the ones with
+# the most twins. So a capped cell's mean is biased DOWN, by at most
+# MAX_THREADS samples' worth. Treat short cells as indicative, not final.
+#
 # Three bounds, because an estimate is not a promise:
 #   EST_LIMIT           do not attempt a cell estimated above this. Cells in
 #                       the expensive band are 10-1000x past any reachable
@@ -58,7 +73,7 @@ echo "  est limit  ${EST_LIMIT}s per cell   budget ${TOTAL_BUDGET_HOURS}h total"
 echo "  -> $OUTPUT_DIR"
 echo
 
-n_ok=0; n_skip=0; n_over=0; n_fail=0
+n_ok=0; n_skip=0; n_over=0; n_fail=0; n_part=0
 while IFS=$'\t' read -r k n m est cum note <&3; do
     [[ -z "${k:-}" || "$k" == \#* || "$k" == "k" ]] && continue
 
@@ -74,7 +89,17 @@ while IFS=$'\t' read -r k n m est cum note <&3; do
           --max-threads "$MAX_THREADS" --output-path "$OUTPUT_DIR/" )
 
     if [[ -s "$out" ]]; then
-        log_cell skipped 0 0 "$(basename "$out")" "${cmd[*]}"
+        have=$(wc -l < "$out" | tr -d ' ')
+        if (( have >= SAMPLES )); then
+            log_cell skipped 0 0 "$(basename "$out")" "${cmd[*]}"
+            n_skip=$((n_skip+1)); continue
+        fi
+        # A short cell from an earlier capped run. Left alone rather than
+        # redone: resuming needs --append --start-sample, but the rows carry no
+        # sample index, so the correct restart point is not recoverable from
+        # the file. Re-running from scratch would discard what is there.
+        echo "  k=$k n=$n m=$m  present but short ($have/$SAMPLES rows) -- left as is"
+        log_cell short "$have" 0 "$(basename "$out")" "${cmd[*]}"
         n_skip=$((n_skip+1)); continue
     fi
 
@@ -102,8 +127,28 @@ while IFS=$'\t' read -r k n m est cum note <&3; do
         printf 'took %8s  %5sMB\n' "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
         log_cell ok "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
         n_ok=$((n_ok+1))
+    elif [[ "$RG_STATUS" == timeout && -s "$out" ]]; then
+        # Keep what it managed. Drop a torn final row first: std::endl writes
+        # the newline last, so a file not ending in one was cut mid-row.
+        if [[ -n "$(tail -c 1 "$out")" ]]; then
+            sed '$d' "$out" > "$out.tmp" && mv "$out.tmp" "$out"
+        fi
+        have=$(wc -l < "$out" | tr -d ' ')
+        if (( have == 0 )); then
+            # Cap hit before a single sample finished; nothing worth keeping.
+            rm -f "$out"
+            printf 'took %8s  %5sMB  capped with 0 samples -- removed\n' \
+                "$(human "$RG_SECONDS")" "$RG_PEAK_MB"
+            log_cell timeout "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
+            n_fail=$((n_fail+1))
+        else
+            printf 'took %8s  %5sMB  capped at %s/%s samples -- KEPT\n' \
+                "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$have" "$SAMPLES"
+            log_cell partial "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
+            n_part=$((n_part+1))
+        fi
     else
-        printf 'took %8s  %5sMB  %s -- removing partial output\n' \
+        printf 'took %8s  %5sMB  %s -- removing output\n' \
             "$(human "$RG_SECONDS")" "$RG_PEAK_MB" "$RG_STATUS"
         rm -f "$out"
         log_cell "$RG_STATUS" "$RG_SECONDS" "$RG_PEAK_MB" "$(basename "$out")" "${cmd[*]}"
@@ -113,6 +158,6 @@ while IFS=$'\t' read -r k n m est cum note <&3; do
 done 3< "$LIST"
 
 echo
-echo "done in $(human $(( $(date +%s) - start )))  ok=$n_ok failed=$n_fail "\
-"already-present=$n_skip over-est-limit=$n_over"
+echo "done in $(human $(( $(date +%s) - start )))  ok=$n_ok partial=$n_part "\
+"failed=$n_fail already-present=$n_skip over-est-limit=$n_over"
 echo "manifest: $OUTPUT_DIR/RUN_MANIFEST.tsv"
