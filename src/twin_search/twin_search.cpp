@@ -1,3 +1,4 @@
+#include <array>
 #include "twin_search.hpp"
 #include <float.h>
 #include <algorithm>
@@ -346,24 +347,46 @@ std::vector<std::size_t> TwinSearch::default_edge_execution_order() {
 // Add an item to the stack, first checking whether it is a viable candidate
 // based on the remaining entries in curr.proj_rem. 
 void TwinSearch::add_to_stack(const TwinSearch::StackItem &curr, const std::vector<int> &comb, std::vector<TwinSearch::StackItem> &stack) {
-    // Copy curr.proj_rem to a new ublas::matrix
-    ProjMatT new_proj_rem(curr.proj_rem);
+    // Validate the candidate BEFORE copying anything.
+    //
+    // This function used to copy curr.proj_rem into a new ublas::matrix as its
+    // very first act, decrement entries in the copy, and bail out as soon as
+    // one went negative. In a search that prunes heavily most candidates are
+    // rejected, so the common path was: allocate a matrix, touch a few entries,
+    // discover the candidate is infeasible, free the matrix. That makes the
+    // allocator the contended resource under parallel search, which does not
+    // scale with threads however many are idle.
+    //
+    // The accepted set is unchanged. The old code rejected on the first entry
+    // to go negative; this accumulates the same decrements and rejects if any
+    // entry would finish below zero. For an entry starting at v and decremented
+    // d times both accept exactly when v - d >= 0. That includes the diagonal:
+    // "must be > 0 before each of d decrements" is the same condition.
+    //
+    // deltas is thread_local to keep its capacity across calls, which is the
+    // point - a plain local would allocate on first push_back every call. It
+    // carries no state between calls: it is cleared on entry, nothing escapes,
+    // and add_to_stack is a leaf, so it is never re-entered on one thread.
+    static thread_local std::vector<std::array<int, 3> > deltas;   // row, col, count
+    deltas.clear();
 
-    // Check whether the addition of any of the cliques in comb would over-use
-    // any edge (making proj_rem(edge) negative). If it would, then this
-    // combination is not viable so we will return without adding it to the stack.
-    std::vector<int> new_hypergraph;
-    std::vector<int> clique;
+    // Returns the running decrement count for (r, c) including this one.
+    auto bump = [](std::vector<std::array<int, 3> > &ds, int r, int c) -> int {
+        for (std::array<int, 3> &d : ds)
+            if (d[0] == r && d[1] == c)
+                return ++d[2];
+        ds.push_back({r, c, 1});
+        return 1;
+    };
+
     for (int cnode_id : comb) {
-        clique = fact.node_map.at(cnode_id);
+        // By reference: node_map.at() returned by value, copying a vector per
+        // clique per candidate.
+        const std::vector<int> &clique = fact.node_map.at(cnode_id);
         for (std::size_t i = 0; i < clique.size(); i++) {
             for (std::size_t j = i+1; j < clique.size(); j++) {
-                new_proj_rem(clique[i], clique[j]) -= 1;
-                new_proj_rem(clique[j], clique[i]) -= 1;
-                if ( new_proj_rem(clique[i], clique[j]) < 0 ) {
-                    // add nothing to the stack and return
+                if (curr.proj_rem(clique[i], clique[j]) - bump(deltas, clique[i], clique[j]) < 0)
                     return;
-                }
             }
 
             // If diagonals are non-zero, decrement
@@ -372,26 +395,28 @@ void TwinSearch::add_to_stack(const TwinSearch::StackItem &curr, const std::vect
             // because the matrix was 0-diagonal or because this entry should
             // be disallowed.
             if (use_diagonal) {
-                if ( new_proj_rem(clique[i], clique[i]) > 0 ) {
-                    new_proj_rem(clique[i], clique[i]) -= 1;
-                } else {
-                    // add nothing to the stack and return
+                if (curr.proj_rem(clique[i], clique[i]) - bump(deltas, clique[i], clique[i]) < 0)
                     return;
-                }
             }
         }
-        new_hypergraph.push_back(cnode_id);
     }
 
-    // Add existing edges to the new hypergraph
-    for (int cnode_id : curr.hypergraph) {
-        new_hypergraph.push_back(cnode_id);
+    // Viable, so now pay for the copy.
+    ProjMatT new_proj_rem(curr.proj_rem);
+    for (const std::array<int, 3> &d : deltas) {
+        new_proj_rem(d[0], d[1]) -= d[2];
+        if (d[0] != d[1])
+            new_proj_rem(d[1], d[0]) -= d[2];   // proj_rem is symmetric
     }
 
-    // Add a StackItem representing the new hypergraph and proj_rem
-    TwinSearch::StackItem to_add(new_hypergraph, new_proj_rem, curr.edge_execution_index+1);
+    std::vector<int> new_hypergraph;
+    new_hypergraph.reserve(comb.size() + curr.hypergraph.size());
+    for (int cnode_id : comb)
+        new_hypergraph.push_back(cnode_id);
+    for (int cnode_id : curr.hypergraph)
+        new_hypergraph.push_back(cnode_id);
 
-    stack.push_back(to_add);
+    stack.push_back(TwinSearch::StackItem(new_hypergraph, new_proj_rem, curr.edge_execution_index+1));
 }
 
 
@@ -674,19 +699,34 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
 
     std::vector<GraphFingerprint> fps = compute_fingerprints(bipartites);
 
-    for(std::size_t i = 0; i < bipartites.size()-1; i++) {
-            if(to_filter[i] > 0) {
+    // One parallel_for over j, rather than a serial loop over i each spawning a
+    // parallel_for over j. The old shape put an implicit barrier after every i -
+    // N barriers for N graphs - with the work per inner loop shrinking to
+    // nothing as i grew, so the late iterations paid full task-spawn and
+    // barrier cost to do almost nothing. The fingerprint pre-filter made that
+    // worse, not better: it made the typical inner iteration so cheap that the
+    // overhead dominated it.
+    //
+    // Parallelising over j instead also removes the write sharing: to_filter[j]
+    // is now touched only by the task that owns j.
+    //
+    // Same result. The old loop skipped any i already filtered, so it marked j
+    // exactly when some UNFILTERED i < j was isomorphic to it; this marks j when
+    // ANY i < j is. Those agree because isomorphism is transitive: let i0 be the
+    // smallest index isomorphic to j. If i0 were itself filtered there would be
+    // an i' < i0 isomorphic to i0 and hence to j, contradicting minimality. So
+    // i0 is unfiltered and the old loop marked j at i = i0.
+    tbb::parallel_for(std::size_t(1), bipartites.size(), [&](std::size_t j){
+        for (std::size_t i = 0; i < j; i++) {
+            if (!fingerprints_match(fps[i], fps[j]))
                 continue;
+            my_callback<UndirectedGraph, UndirectedGraph> mc(bipartites[i], bipartites[j]);
+            if ( boost::vf2_graph_iso(bipartites[i], bipartites[j], mc) ) {
+                to_filter[j] = 1;
+                return;              // one witness is enough
             }
-        tbb::parallel_for(std::size_t(i+1), bipartites.size(), [&](std::size_t j){
-            if (to_filter[j] < 1 && fingerprints_match(fps[i], fps[j])) {
-                my_callback<UndirectedGraph, UndirectedGraph> mc(bipartites[i], bipartites[j]);
-                if ( boost::vf2_graph_iso(bipartites[i], bipartites[j], mc) ) {
-                    to_filter[j] += 1;
-                }
-            }
-        });
-    }
+        }
+    });
 
     return to_filter;
 }
@@ -709,10 +749,14 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
 
     std::vector<GraphFingerprint> fps = compute_fingerprints(line_graphs);
 
-    for(std::size_t i = 0; i < line_graphs.size()-1; i++) {
-        tbb::parallel_for(std::size_t(i+1), line_graphs.size(), [&](std::size_t j){
+    // One parallel_for over j rather than a barrier per i; see the note in
+    // run_iso_tests_parallel. Every pair i < j is still tested, and unlike the
+    // isomorphism filter there is no early exit, because every mate pair is
+    // wanted rather than one witness.
+    tbb::parallel_for(std::size_t(1), line_graphs.size(), [&](std::size_t j){
+        for (std::size_t i = 0; i < j; i++) {
                 if (!fingerprints_match(fps[i], fps[j]))
-                    return;
+                    continue;
                 // NOTE: mc must be a plain local. It was previously
                 // thread_local, which constructs it once per thread and then
                 // leaves it holding references to whichever two graphs that
@@ -723,13 +767,19 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
                     // If line graphs are isomorphic, i and j are a pair of mates
                     mate_pairs.push_back( std::vector<int> {static_cast<int> (i), static_cast<int> (j)});
                 }
-        });
-    }
+        }
+    });
 
     // put in an std vector for return
     std::vector<std::vector<int> > ret(mate_pairs.size());
     for (std::size_t i = 0; i < mate_pairs.size(); i++)
         ret[i] = mate_pairs[i];
+
+    // Sorted so the result does not depend on thread scheduling. It never did
+    // before either - a concurrent_vector filled from a parallel_for is in
+    // completion order - but the old shape at least grouped pairs by i, and
+    // callers that write these out deserve a stable order.
+    std::sort(ret.begin(), ret.end());
 
     return ret;
 }
