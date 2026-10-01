@@ -699,19 +699,34 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
 
     std::vector<GraphFingerprint> fps = compute_fingerprints(bipartites);
 
-    for(std::size_t i = 0; i < bipartites.size()-1; i++) {
-            if(to_filter[i] > 0) {
+    // One parallel_for over j, rather than a serial loop over i each spawning a
+    // parallel_for over j. The old shape put an implicit barrier after every i -
+    // N barriers for N graphs - with the work per inner loop shrinking to
+    // nothing as i grew, so the late iterations paid full task-spawn and
+    // barrier cost to do almost nothing. The fingerprint pre-filter made that
+    // worse, not better: it made the typical inner iteration so cheap that the
+    // overhead dominated it.
+    //
+    // Parallelising over j instead also removes the write sharing: to_filter[j]
+    // is now touched only by the task that owns j.
+    //
+    // Same result. The old loop skipped any i already filtered, so it marked j
+    // exactly when some UNFILTERED i < j was isomorphic to it; this marks j when
+    // ANY i < j is. Those agree because isomorphism is transitive: let i0 be the
+    // smallest index isomorphic to j. If i0 were itself filtered there would be
+    // an i' < i0 isomorphic to i0 and hence to j, contradicting minimality. So
+    // i0 is unfiltered and the old loop marked j at i = i0.
+    tbb::parallel_for(std::size_t(1), bipartites.size(), [&](std::size_t j){
+        for (std::size_t i = 0; i < j; i++) {
+            if (!fingerprints_match(fps[i], fps[j]))
                 continue;
+            my_callback<UndirectedGraph, UndirectedGraph> mc(bipartites[i], bipartites[j]);
+            if ( boost::vf2_graph_iso(bipartites[i], bipartites[j], mc) ) {
+                to_filter[j] = 1;
+                return;              // one witness is enough
             }
-        tbb::parallel_for(std::size_t(i+1), bipartites.size(), [&](std::size_t j){
-            if (to_filter[j] < 1 && fingerprints_match(fps[i], fps[j])) {
-                my_callback<UndirectedGraph, UndirectedGraph> mc(bipartites[i], bipartites[j]);
-                if ( boost::vf2_graph_iso(bipartites[i], bipartites[j], mc) ) {
-                    to_filter[j] += 1;
-                }
-            }
-        });
-    }
+        }
+    });
 
     return to_filter;
 }
@@ -734,10 +749,14 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
 
     std::vector<GraphFingerprint> fps = compute_fingerprints(line_graphs);
 
-    for(std::size_t i = 0; i < line_graphs.size()-1; i++) {
-        tbb::parallel_for(std::size_t(i+1), line_graphs.size(), [&](std::size_t j){
+    // One parallel_for over j rather than a barrier per i; see the note in
+    // run_iso_tests_parallel. Every pair i < j is still tested, and unlike the
+    // isomorphism filter there is no early exit, because every mate pair is
+    // wanted rather than one witness.
+    tbb::parallel_for(std::size_t(1), line_graphs.size(), [&](std::size_t j){
+        for (std::size_t i = 0; i < j; i++) {
                 if (!fingerprints_match(fps[i], fps[j]))
-                    return;
+                    continue;
                 // NOTE: mc must be a plain local. It was previously
                 // thread_local, which constructs it once per thread and then
                 // leaves it holding references to whichever two graphs that
@@ -748,13 +767,19 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
                     // If line graphs are isomorphic, i and j are a pair of mates
                     mate_pairs.push_back( std::vector<int> {static_cast<int> (i), static_cast<int> (j)});
                 }
-        });
-    }
+        }
+    });
 
     // put in an std vector for return
     std::vector<std::vector<int> > ret(mate_pairs.size());
     for (std::size_t i = 0; i < mate_pairs.size(); i++)
         ret[i] = mate_pairs[i];
+
+    // Sorted so the result does not depend on thread scheduling. It never did
+    // before either - a concurrent_vector filled from a parallel_for is in
+    // completion order - but the old shape at least grouped pairs by i, and
+    // callers that write these out deserve a stable order.
+    std::sort(ret.begin(), ret.end());
 
     return ret;
 }
