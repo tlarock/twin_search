@@ -46,6 +46,7 @@ struct MyArgs : public argparse::Args {
     bool &width_limit_auto = flag("width-limit-auto", "If given, automatically choose a width-limit by computing the width-product of --samples examples and choosing the median. Incompatible with width-limit-exp, which is ignored if this is given.");
     int &width_limit_samples = kwarg("width-limit-samples", "If >0 and --width-limit-auto is given, auto width limit will be set to the median of this number of samples").set_default(0);
     unsigned int &seed = kwarg("seed", "Master RNG seed. If 0 (default), sampling is seeded from the clock and thread id and is NOT reproducible; any positive value makes the sampled hypergraphs a deterministic function of (seed, sample index), independent of thread count and scheduling. Output LINE ORDER still varies under parallel writes - sort before diffing.").set_default(0u);
+    bool &dry_run = flag("dry-run", "Emit each sample's PRE-SEARCH fingerprint (index,max_log_width,num_edges,num_cliques,projection) to stdout as 'FP i,w,e,c' lines and exit without searching. Requires --seed. Used to work out which sample indices an interrupted output file already contains, since rows carry no index and parallel writes do not preserve order.");
     bool &no_max_rejections = flag("infinite-rejections", "If given with width_limit > 0, there will be no limit on the number of samples rejected. Warning: Could lead to infinite loops. No effect if width_limit_exp <= 0.");
 };
 
@@ -246,6 +247,91 @@ bool one_sample_write(Params &p, std::ofstream &outfile) {
     }
 
     return true;
+}
+
+// ---------------------------------------------------------------- dry run ---
+// A sample's fingerprint, computable WITHOUT running the search.
+//
+// Why this exists: an output row carries no sample index, and writes happen in
+// completion order under a mutex, so after an interrupted run the set of
+// finished indices is an arbitrary subset of [0, N) rather than a prefix.
+// --start-sample therefore cannot resume one. Matching these fingerprints
+// against the rows present recovers the missing indices.
+// See slurm-scripts/RESUME-PLAN.md.
+struct Fingerprint {
+    int i = 0;
+    int max_log_width = 0;
+    int num_edges = 0;
+    int num_cliques = 0;
+    std::string proj;      // canonical projection key - see projection_key
+    bool ok = false;
+};
+
+// Upper triangle of the projection, raw and '-' separated.
+//
+// This, not the three integers above, is what actually identifies a sample.
+// Measured on real cells, the (max_log_width, num_edges, num_cliques) triple
+// is far too coarse: k=4 n=8 m=34 has only NINE distinct triples across 500
+// rows, largest group 144. Substituting one index for another inside such a
+// group would duplicate some projections and drop others - a silently biased
+// sample. Two samples share a projection only if they are genuinely mates, and
+// then substitution IS exact, because every row field except runtime is a
+// function of the projection alone.
+//
+// Emitted raw rather than hashed: n is small (36 numbers at n=9) and a raw key
+// removes any need to replicate a hash function byte-for-byte in Python.
+static std::string projection_key(const ProjMatT &M) {
+    std::string s;
+    s.reserve(M.size1() * M.size1() * 2);
+    for (std::size_t i = 0; i < M.size1(); i++)
+        for (std::size_t j = i + 1; j < M.size2(); j++) {
+            if (!s.empty()) s += '-';
+            s += std::to_string(M(i, j));
+        }
+    return s;
+}
+
+// Mirrors one_sample_write's accept/reject logic exactly, but stops before the
+// search. Every field emitted comes from the projection and factor graph
+// alone - the projection key, max_log_width's closed form, and
+// the two counts are set in FactorGraph's constructor and never touched by the
+// search - so this costs seconds where a real run costs hours.
+static Fingerprint fingerprint_one(Params p) {
+    // The retry loop is NOT optional. A degenerate draw (duplicate hyperedges,
+    // so h.m < m) is re-fed by the driver with attempt+1, and the stream is
+    // (seed, i, attempt). Skipping this gives the wrong hypergraph for exactly
+    // the indices that are commonest in dense cells.
+    for (int guard = 0; guard < 100000; guard++) {
+        Hypergraph h;
+        std::mt19937 gen = sample_generator(p);
+        if (!p.config_model)
+            h = sample_uniform_random(p.n, p.m, p.k, gen);
+        else
+            h = uniform_hypergraph_configuration_model(p.n, p.gamma, p.k, p.n / 2, gen);
+
+        if (h.m != p.m || h.n != p.n) { p.attempt += 1; continue; }
+
+        ProjectedGraph proj(h);
+        TwinSearch twins(proj, p.min_k, p.max_k, p.filter_isomorphic, !p.sequential, false, false);
+
+        // An infeasible sample is not retried: one_sample_write warns and
+        // writes a row of zeros, so the fingerprint must be zeros to match it.
+        // An infeasible sample is not retried: one_sample_write warns and
+        // writes a row of ZEROS with no twins, so the three counts must be
+        // zero to match it. The projection key is still emitted - it just
+        // cannot be matched from the row, which has no twin to rebuild from.
+        if (!twins.feasible)
+            return Fingerprint{p.i, 0, 0, 0, projection_key(proj.proj_mat), true};
+
+        const int mlw = static_cast<int>(std::round(
+            TwinSearch::compute_log_width_product(proj, twins.fact)));
+        if (p.width_limit_exp > 0 && mlw > p.width_limit_exp) { p.attempt += 1; continue; }
+
+        return Fingerprint{p.i, mlw, twins.fact.num_edge_nodes,
+                           twins.fact.num_clique_nodes,
+                           projection_key(proj.proj_mat), true};
+    }
+    return Fingerprint{p.i, 0, 0, 0, std::string(), false};
 }
 
 // NOTE the width-limit pre-pass draws its own samples, so it needs seeding too
@@ -454,6 +540,41 @@ int main(int argc, char *argv[]) {
     for (int i = start_sample; i < num_samples; i++) {
         Params p(config_model, i, seed, 0, n, m, gamma, k, min_k, max_k, filter_isomorphic, sequential, width_limit_exponent);
         loop_args.push_back(p);
+    }
+
+    // --dry-run: fingerprint every index and exit, touching no output file.
+    if (args.dry_run) {
+        if (seed == 0) {
+            std::cout << "--dry-run requires --seed. Without it the hypergraph "
+                         "for a given index is not reproducible, so the "
+                         "fingerprints could not be matched against any "
+                         "existing output." << std::endl;
+            return 1;
+        }
+        std::vector<Fingerprint> fps(loop_args.size());
+        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, loop_args.size()),
+            [&](const tbb::blocked_range<std::size_t> &r) {
+                for (std::size_t j = r.begin(); j < r.end(); j++)
+                    fps[j] = fingerprint_one(loop_args[j]);
+            });
+        // Emitted in INDEX order whatever the completion order, so the output
+        // is a pure function of (seed, n, m, k, min_k, max_k) and two runs can
+        // be diffed directly. The "FP " prefix keeps these lines separable
+        // from the progress chatter already on stdout.
+        for (const Fingerprint &f : fps) {
+            if (!f.ok) {
+                std::cout << "ERROR: sample " << f.i << " hit the retry guard; "
+                             "refusing to emit a partial fingerprint set."
+                          << std::endl;
+                return 1;
+            }
+            std::cout << "FP " << f.i << "," << f.max_log_width << ","
+                      << f.num_edges << "," << f.num_cliques << ","
+                      << f.proj << std::endl;
+        }
+        std::cout << "Fingerprinted " << fps.size() << " samples ["
+                  << start_sample << ", " << num_samples << ")" << std::endl;
+        return 0;
     }
 
     if (seed == 0)
