@@ -470,6 +470,53 @@ bool TwinSearch::is_isomorphic(const std::vector<UndirectedGraph> &bipartites, c
 // TODO: I could simplify and standardize this using member functions of 
 // hypergraph objects, but it would require constructing those objects,
 // which will add a multiplier to how this function works.
+// Bipartite representation of one hypergraph. Same construction as in
+// compute_bipartite_and_linegraph, split out so a caller that needs only this
+// does not pay for a line graph it will never read.
+UndirectedGraph TwinSearch::compute_bipartite(const std::vector<int> &hypergraph) {
+    UndirectedGraph bipartite;
+    std::map<int, int> id_map;
+    int bp_node_id = 0;
+    for (int cnode_id : hypergraph) {
+        id_map[cnode_id] = bp_node_id;
+        bp_node_id++;
+        for (int u : fact.node_map.at(cnode_id)) {
+            // cnode_ids overlap 0..n-1, so node ids are remapped
+            if ( id_map.find(u) == id_map.end() ) {
+                id_map[u] = bp_node_id;
+                bp_node_id++;
+            }
+            boost::add_edge(id_map[u], id_map[cnode_id], bipartite);
+        }
+    }
+    return bipartite;
+}
+
+// Line graph of one hypergraph, via its incidence matrix.
+UndirectedGraph TwinSearch::compute_linegraph(const std::vector<int> &hypergraph) {
+    ublas::matrix<int> incidence_matrix(hypergraph.size(), proj.proj_mat.size1(), 0);
+    int incidence_row = 0;
+    for (int cnode_id : hypergraph) {
+        for (int u : fact.node_map.at(cnode_id))
+            incidence_matrix(incidence_row, u) = 1;
+        incidence_row++;
+    }
+
+    UndirectedGraph line_graph;
+    ublas::matrix<int> lg_mat = ublas::prod(incidence_matrix, ublas::trans(incidence_matrix));
+    for (std::size_t r = 0; r < lg_mat.size1(); ++r) {
+        for (std::size_t c = 0; c < lg_mat.size2(); ++c) {
+            if (r == c)
+                continue;
+            if (lg_mat(r, c) > 0) {
+                for (int v = 0; v < lg_mat(r,c); ++v)
+                    boost::add_edge(r, c, line_graph);
+            }
+        }
+    }
+    return line_graph;
+}
+
 void TwinSearch::compute_bipartite_and_linegraph(std::vector<UndirectedGraph> &bipartites, std::vector<UndirectedGraph> &line_graphs, const int i, std::vector<int> &hypergraph) { 
     // Initialize objects for new structures
     UndirectedGraph bipartite;
@@ -622,27 +669,46 @@ void TwinSearch::parallel_search(bool filter_isomorphic) {
         }
     });
 
-    for(std::vector<int> hg : concurrent_twins) {
-        twins.push_back(hg);
+    // Move rather than copy. These vectors are the bulk of the twin storage and
+    // concurrent_twins is dead afterwards, so copying held two full sets alive
+    // at once for no reason.
+    twins.reserve(concurrent_twins.size());
+    for (std::vector<int> &hg : concurrent_twins)
+        twins.push_back(std::move(hg));
+    concurrent_twins.clear();
+
+    // Line graphs and bipartites are each read by exactly ONE phase, and the
+    // phases are sequential: the mates test never looks at a bipartite, and the
+    // isomorphism filter never looks at a line graph. Building both up front
+    // therefore held two full-size graph vectors alive simultaneously, which on
+    // these cells is where the memory goes - a mid-curve sample can produce
+    // ~460k twins, and each graph heap-allocates per vertex.
+    //
+    // Build, use, free, then build the next. Peak becomes
+    //   twins + max(line_graphs, bipartites)
+    // instead of
+    //   twins + line_graphs + bipartites.
+    // The cost is recomputing each hypergraph's incidence matrix twice, which
+    // is trivial next to the graph it feeds.
+    {
+        std::vector<UndirectedGraph> line_graphs(twins.size());
+        tbb::parallel_for(tbb::blocked_range<int>(0, twins.size()),
+                           [&](tbb::blocked_range<int> r) {
+            for (int i=r.begin(); i<r.end(); ++i)
+                line_graphs[i] = compute_linegraph(twins[i]);
+        });
+        mates = run_mates_tests_parallel(line_graphs);
     }
 
-
-    // Initialize container for bipartite and line graph representations
-    std::vector<UndirectedGraph> bipartites(twins.size());
-    std::vector<UndirectedGraph> line_graphs(twins.size());
-    // Construct in parallel
-    tbb::parallel_for(tbb::blocked_range<int>(0, twins.size()),
-                       [&](tbb::blocked_range<int> r) {
-        for (int i=r.begin(); i<r.end(); ++i) {
-            compute_bipartite_and_linegraph(bipartites, line_graphs, i, twins[i]);
-        }
-    });
-
-
-    // Check for mates
-    mates = run_mates_tests_parallel(line_graphs);
-
     if (filter_isomorphic) {
+        // Only built when the filter actually runs. Previously these were
+        // allocated unconditionally even with filtering off.
+        std::vector<UndirectedGraph> bipartites(twins.size());
+        tbb::parallel_for(tbb::blocked_range<int>(0, twins.size()),
+                           [&](tbb::blocked_range<int> r) {
+            for (int i=r.begin(); i<r.end(); ++i)
+                bipartites[i] = compute_bipartite(twins[i]);
+        });
         std::vector<int> to_filter = TwinSearch::run_iso_tests_parallel(bipartites);
         for(std::size_t i = 0; i < twins.size(); i++) {
             if (to_filter[i] == 0)

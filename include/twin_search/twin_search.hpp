@@ -79,6 +79,12 @@ class TwinSearch {
         void process_item(std::vector<StackItem> &stack, StackItem &s, std::vector<UndirectedGraph> &bipartites, std::vector<GraphFingerprint> &fingerprints, std::vector<UndirectedGraph > &line_graphs, bool filter_isomorphic);
         void parallel_process_item(StackItem &s, tbb::concurrent_vector<std::vector<int> >&, std::vector<StackItem> &tmp_stack);
         void compute_bipartite_and_linegraph(std::vector<UndirectedGraph> &bipartites, std::vector<UndirectedGraph > &line_graphs, const int i, std::vector<int> &hypergraph);
+        // Single-structure variants. parallel_search needs the two in separate
+        // phases, so holding both at once is pure peak memory; each rebuilds
+        // the small incidence matrix, which is far cheaper than the graph it
+        // is used to make.
+        UndirectedGraph compute_bipartite(const std::vector<int> &hypergraph);
+        UndirectedGraph compute_linegraph(const std::vector<int> &hypergraph);
         bool is_isomorphic(const std::vector<UndirectedGraph> &bipartites, const std::vector<GraphFingerprint> &fingerprints, const int cand_idx);
         void add_to_stack(const StackItem &curr, const std::vector<int> &comb, std::vector<StackItem> &stack);
         std::vector<int> get_filtered_neighbors(const StackItem &s, int enode_id);
