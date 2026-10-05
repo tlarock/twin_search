@@ -628,6 +628,24 @@ void TwinSearch::print_twins(const std::vector<std::vector<int> > &twins){
 }
 
 // START PARALLEL FUNCTIONS
+// TEMPORARY instrumentation for the memory experiment. getrusage reports the
+// PEAK so far, so comparing the value at successive phase boundaries shows
+// which phase actually raised the high-water mark. Enabled only when
+// TWIN_RSS_TRACE is set, and writes to stderr so it cannot pollute output.
+#include <sys/resource.h>
+static void rss_mark(const char *phase, std::size_t n) {
+    if (!std::getenv("TWIN_RSS_TRACE")) return;
+    struct rusage ru;
+    getrusage(RUSAGE_SELF, &ru);
+#ifdef __APPLE__
+    const double mb = ru.ru_maxrss / 1048576.0;   // bytes on macOS
+#else
+    const double mb = ru.ru_maxrss / 1024.0;      // kilobytes on Linux
+#endif
+    std::cerr << "RSS_TRACE " << phase << " peak_mb=" << mb
+              << " twins=" << n << std::endl;
+}
+
 void TwinSearch::parallel_search(bool filter_isomorphic) {
     if (!feasible) {
         diagnostic() << "parallel_search() was called on infeasible projection. Returning without running search." << std::endl;
@@ -672,6 +690,7 @@ void TwinSearch::parallel_search(bool filter_isomorphic) {
     // Move rather than copy. These vectors are the bulk of the twin storage and
     // concurrent_twins is dead afterwards, so copying held two full sets alive
     // at once for no reason.
+    rss_mark("after_traversal", concurrent_twins.size());
     twins.reserve(concurrent_twins.size());
     for (std::vector<int> &hg : concurrent_twins)
         twins.push_back(std::move(hg));
@@ -697,8 +716,11 @@ void TwinSearch::parallel_search(bool filter_isomorphic) {
             for (int i=r.begin(); i<r.end(); ++i)
                 line_graphs[i] = compute_linegraph(twins[i]);
         });
+        rss_mark("line_graphs_built", twins.size());
         mates = run_mates_tests_parallel(line_graphs);
+        rss_mark("after_mates", twins.size());
     }
+    rss_mark("line_graphs_freed", twins.size());
 
     if (filter_isomorphic) {
         // Only built when the filter actually runs. Previously these were
@@ -709,7 +731,9 @@ void TwinSearch::parallel_search(bool filter_isomorphic) {
             for (int i=r.begin(); i<r.end(); ++i)
                 bipartites[i] = compute_bipartite(twins[i]);
         });
+        rss_mark("bipartites_built", twins.size());
         std::vector<int> to_filter = TwinSearch::run_iso_tests_parallel(bipartites);
+        rss_mark("after_iso", twins.size());
         for(std::size_t i = 0; i < twins.size(); i++) {
             if (to_filter[i] == 0)
                 filtered_twins.push_back(i);
