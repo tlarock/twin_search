@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <iterator>
 #include <random>
+#include <set>
+#include <sstream>
 #include <oneapi/tbb.h>
 #include <oneapi/tbb/task_arena.h>
 #include <oneapi/tbb/global_control.h>
@@ -46,6 +48,7 @@ struct MyArgs : public argparse::Args {
     bool &width_limit_auto = flag("width-limit-auto", "If given, automatically choose a width-limit by computing the width-product of --samples examples and choosing the median. Incompatible with width-limit-exp, which is ignored if this is given.");
     int &width_limit_samples = kwarg("width-limit-samples", "If >0 and --width-limit-auto is given, auto width limit will be set to the median of this number of samples").set_default(0);
     unsigned int &seed = kwarg("seed", "Master RNG seed. If 0 (default), sampling is seeded from the clock and thread id and is NOT reproducible; any positive value makes the sampled hypergraphs a deterministic function of (seed, sample index), independent of thread count and scheduling. Output LINE ORDER still varies under parallel writes - sort before diffing.").set_default(0u);
+    std::string &sample_list = kwarg("sample-list", "Comma-separated sample indices to run INSTEAD of the range [start-sample, samples). Used by resume_cell.sh to re-run exactly the samples an interrupted cell is missing, in ONE process, so the driver keeps its parallelism across them. --samples is still used for the output filename, so the result lands in the file the cell belongs to. Incompatible with --start-sample.").set_default(std::string());
     bool &dry_run = flag("dry-run", "Emit each sample's PRE-SEARCH fingerprint (index,max_log_width,num_edges,num_cliques,projection) to stdout as 'FP i,w,e,c' lines and exit without searching. Requires --seed. Used to work out which sample indices an interrupted output file already contains, since rows carry no index and parallel writes do not preserve order.");
     bool &no_max_rejections = flag("infinite-rejections", "If given with width_limit > 0, there will be no limit on the number of samples rejected. Warning: Could lead to infinite loops. No effect if width_limit_exp <= 0.");
 };
@@ -535,11 +538,51 @@ int main(int argc, char *argv[]) {
 
     filename += ".csv";
 
-    std::vector<Params> loop_args; 
-    // Construct arguments vector using Params helper struct
-    for (int i = start_sample; i < num_samples; i++) {
-        Params p(config_model, i, seed, 0, n, m, gamma, k, min_k, max_k, filter_isomorphic, sequential, width_limit_exponent);
-        loop_args.push_back(p);
+    std::vector<Params> loop_args;
+    const std::string sample_list = args.sample_list;
+    if (!sample_list.empty()) {
+        // Explicit index set, for resuming an interrupted cell. Validated
+        // strictly: an out-of-range index would silently produce a sample the
+        // cell should not contain, and a repeated one would append a duplicate
+        // row that nothing downstream could detect.
+        if (start_sample != 0) {
+            std::cout << "--sample-list and --start-sample are incompatible." << std::endl;
+            return 1;
+        }
+        std::set<int> seen;
+        std::stringstream ss(sample_list);
+        std::string tok;
+        while (std::getline(ss, tok, ',')) {
+            if (tok.empty()) continue;
+            int i;
+            try { i = std::stoi(tok); }
+            catch (const std::exception &) {
+                std::cout << "--sample-list: not an integer: '" << tok << "'" << std::endl;
+                return 1;
+            }
+            if (i < 0 || i >= num_samples) {
+                std::cout << "--sample-list: index " << i << " outside [0, " << num_samples << ")." << std::endl;
+                return 1;
+            }
+            if (!seen.insert(i).second) {
+                std::cout << "--sample-list: index " << i << " repeated." << std::endl;
+                return 1;
+            }
+        }
+        if (seen.empty()) {
+            std::cout << "--sample-list given but empty." << std::endl;
+            return 1;
+        }
+        for (int i : seen)
+            loop_args.push_back(Params(config_model, i, seed, 0, n, m, gamma, k, min_k, max_k, filter_isomorphic, sequential, width_limit_exponent));
+        std::cout << "Running " << loop_args.size() << " explicitly listed samples of "
+                  << num_samples << " (resume)." << std::endl;
+    } else {
+        // Construct arguments vector using Params helper struct
+        for (int i = start_sample; i < num_samples; i++) {
+            Params p(config_model, i, seed, 0, n, m, gamma, k, min_k, max_k, filter_isomorphic, sequential, width_limit_exponent);
+            loop_args.push_back(p);
+        }
     }
 
     // --dry-run: fingerprint every index and exit, touching no output file.
