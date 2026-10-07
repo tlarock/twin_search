@@ -789,6 +789,15 @@ void TwinSearch::parallel_search(bool filter_isomorphic) {
 void TwinSearch::parallel_search_impl(std::vector<StackItem> &seeds,
                                       const std::vector<std::vector<int> > &initial_twins,
                                       bool filter_isomorphic) {
+    std::chrono::high_resolution_clock phase_clock;
+    auto phase_start = phase_clock.now();
+    auto phase_ms = [&]() {
+        const auto now = phase_clock.now();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - phase_start).count();
+        phase_start = now;
+        return static_cast<std::int64_t>(ms);
+    };
+
     tbb::concurrent_vector<std::vector<int> > concurrent_twins;
     for (const std::vector<int> &t : initial_twins)
         concurrent_twins.push_back(t);
@@ -810,6 +819,7 @@ void TwinSearch::parallel_search_impl(std::vector<StackItem> &seeds,
     // Move rather than copy. These vectors are the bulk of the twin storage and
     // concurrent_twins is dead afterwards, so copying held two full sets alive
     // at once for no reason.
+    ms_traversal = phase_ms();
     rss_mark("after_traversal", concurrent_twins.size());
     twins.reserve(concurrent_twins.size());
     for (std::vector<int> &hg : concurrent_twins)
@@ -844,9 +854,10 @@ void TwinSearch::parallel_search_impl(std::vector<StackItem> &seeds,
                 line_graphs[i] = compute_linegraph(twins[i]);
         });
         rss_mark("line_graphs_built", twins.size());
-        mates = run_mates_tests_parallel(line_graphs);
+        mates = run_mates_tests_parallel(line_graphs, &mates_stats, skip_vf2_for_measurement);
         rss_mark("after_mates", twins.size());
     }
+    ms_mates = phase_ms();
     rss_mark("line_graphs_freed", twins.size());
 
     if (filter_isomorphic) {
@@ -859,12 +870,13 @@ void TwinSearch::parallel_search_impl(std::vector<StackItem> &seeds,
                 bipartites[i] = compute_bipartite(twins[i]);
         });
         rss_mark("bipartites_built", twins.size());
-        std::vector<int> to_filter = TwinSearch::run_iso_tests_parallel(bipartites);
+        std::vector<int> to_filter = TwinSearch::run_iso_tests_parallel(bipartites, &iso_stats, skip_vf2_for_measurement);
         rss_mark("after_iso", twins.size());
         for(std::size_t i = 0; i < twins.size(); i++) {
             if (to_filter[i] == 0)
                 filtered_twins.push_back(i);
         }
+        ms_iso = phase_ms();
     }
 }
 
@@ -910,12 +922,16 @@ void TwinSearch::parallel_process_item(StackItem &s, tbb::concurrent_vector<std:
 //  NOTE: boost::vf2_graph_iso can not handle self-loops with undirectedS
 //  graphs. Proceed with caution.
 //
-std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph> &bipartites) {
+std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph> &bipartites,
+                                                   PairStats *stats, bool skip_vf2) {
     std::vector<int> to_filter(bipartites.size());
     if (bipartites.size() < 2)
         return to_filter;
 
     std::vector<GraphFingerprint> fps = compute_fingerprints(bipartites);
+    // Per-thread, summed at the end. A shared counter incremented T^2/2 times
+    // would be measuring its own contention.
+    tbb::enumerable_thread_specific<PairStats> local;
 
     // One parallel_for over j, rather than a serial loop over i each spawning a
     // parallel_for over j. The old shape put an implicit barrier after every i -
@@ -935,17 +951,31 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
     // an i' < i0 isomorphic to i0 and hence to j, contradicting minimality. So
     // i0 is unfiltered and the old loop marked j at i = i0.
     tbb::parallel_for(std::size_t(1), bipartites.size(), [&](std::size_t j){
+        PairStats &ls = local.local();
         for (std::size_t i = 0; i < j; i++) {
+            ls.pairs++;
             if (!fingerprints_match(fps[i], fps[j]))
+                continue;
+            ls.fp_match++;
+            if (skip_vf2)
                 continue;
             my_callback<UndirectedGraph, UndirectedGraph> mc(bipartites[i], bipartites[j]);
             if ( boost::vf2_graph_iso(bipartites[i], bipartites[j], mc) ) {
+                ls.vf2_true++;
                 to_filter[j] = 1;
                 return;              // one witness is enough
             }
         }
     });
 
+    if (stats) {
+        *stats = PairStats();
+        for (const PairStats &ls : local) {
+            stats->pairs += ls.pairs;
+            stats->fp_match += ls.fp_match;
+            stats->vf2_true += ls.vf2_true;
+        }
+    }
     return to_filter;
 }
 
@@ -960,20 +990,27 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
 // NOTE: boost::vf2_graph_iso can not handle self-loops with undirectedS
 // graphs. Proceed with caution.
 //
-std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<UndirectedGraph> &line_graphs) {
+std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<UndirectedGraph> &line_graphs,
+                                                   PairStats *stats, bool skip_vf2) {
     tbb::concurrent_vector<std::vector<int> > mate_pairs;
     if (line_graphs.size() < 2)
         return std::vector<std::vector<int> >(0);
 
     std::vector<GraphFingerprint> fps = compute_fingerprints(line_graphs);
+    tbb::enumerable_thread_specific<PairStats> local;
 
     // One parallel_for over j rather than a barrier per i; see the note in
     // run_iso_tests_parallel. Every pair i < j is still tested, and unlike the
     // isomorphism filter there is no early exit, because every mate pair is
     // wanted rather than one witness.
     tbb::parallel_for(std::size_t(1), line_graphs.size(), [&](std::size_t j){
+        PairStats &ls = local.local();
         for (std::size_t i = 0; i < j; i++) {
+                ls.pairs++;
                 if (!fingerprints_match(fps[i], fps[j]))
+                    continue;
+                ls.fp_match++;
+                if (skip_vf2)
                     continue;
                 // NOTE: mc must be a plain local. It was previously
                 // thread_local, which constructs it once per thread and then
@@ -982,11 +1019,21 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
                 // callback never reads them.
                 my_callback<UndirectedGraph, UndirectedGraph> mc(line_graphs[i], line_graphs[j]);
                 if ( boost::vf2_graph_iso(line_graphs[i], line_graphs[j], mc) ) {
+                    ls.vf2_true++;
                     // If line graphs are isomorphic, i and j are a pair of mates
                     mate_pairs.push_back( std::vector<int> {static_cast<int> (i), static_cast<int> (j)});
                 }
         }
     });
+
+    if (stats) {
+        *stats = PairStats();
+        for (const PairStats &ls : local) {
+            stats->pairs += ls.pairs;
+            stats->fp_match += ls.fp_match;
+            stats->vf2_true += ls.vf2_true;
+        }
+    }
 
     // put in an std vector for return
     std::vector<std::vector<int> > ret(mate_pairs.size());

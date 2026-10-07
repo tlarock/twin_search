@@ -55,6 +55,7 @@ struct ProbeArgs : public argparse::Args {
     bool &verify_resume = flag("verify-resume", "End-to-end check: run the sample to completion, then run it again draining at each --drain-at point, write a checkpoint, read it back, resume from it, and compare. The gate for the whole idea - an interrupted search must give the SAME answer, not a similar one.");
     std::string &ckpt_dir = kwarg("checkpoint-dir", "Where --verify-resume writes its checkpoint files.").set_default(std::string("/tmp"));
     bool &drain_on_signal = flag("drain-on-signal", "Arm with no deadline and drain when SIGTERM arrives. This is the production backstop: SLURM's --signal=B:TERM@<n> reaches the driver through /usr/bin/time, and run_cell_array.sh already forwards it. Use with --verify-resume to prove the signal path end to end.");
+    bool &pair_stats = flag("pair-stats", "Where do the two O(T^2) phases actually go? Reports pairs examined, how many survive the (|V|,|E|,degree-sequence) pre-filter into a vf2 call, and how many vf2 confirms - then repeats the run with vf2 suppressed, so the phase time splits into cheap scan versus expensive confirmation. That split decides what a canonical-form rewrite would buy.");
     bool &full = flag("full", "Also run the sample to completion first, for a denominator. Can be very slow on exactly the samples this is aimed at.");
 };
 
@@ -116,7 +117,11 @@ int main(int argc, char *argv[]) {
 
     std::cout << "# twin_frontier_probe  n=" << n << " m=" << m << " k=" << k
               << " seed=" << args.seed << "\n";
-    if (args.verify_resume)
+    if (args.pair_stats)
+        std::cout << "index\ttwins\tmate_pairs\tmate_fpmatch\tmate_true\tmate_ms"
+                     "\tmate_scan_ms\tiso_pairs\tiso_fpmatch\tiso_true\tiso_ms"
+                     "\tiso_scan_ms\ttrav_ms\n";
+    else if (args.verify_resume)
         std::cout << "index\tdrain_s\tfrontier\tbanked\tref_twins\tres_twins"
                      "\tref_mates\tres_mates\tref_s\tresume_s\tverdict\n";
     else
@@ -127,6 +132,34 @@ int main(int argc, char *argv[]) {
         Hypergraph h;
         if (!draw(n, m, k, args.seed, i, h)) { std::cout << i << "\tDRAW-FAILED\n"; continue; }
         ProjectedGraph proj(h);
+
+        if (args.pair_stats) {
+            TwinSearch ts(proj, min_k, max_k, true, true, false, false);
+            if (!ts.feasible) { std::cout << i << "\tINFEASIBLE\n"; continue; }
+            ts.parallel_search(true);
+            const std::int64_t T = static_cast<std::int64_t>(ts.twins.size());
+
+            // Same sample again with vf2 suppressed. The pre-filter still runs,
+            // so the difference in phase time is what vf2 cost.
+            TwinSearch noe(proj, min_k, max_k, true, true, false, false);
+            noe.skip_vf2_for_measurement = true;
+            noe.parallel_search(true);
+
+            const std::int64_t iso_scan = noe.ms_iso < 0 ? 0 : noe.ms_iso;
+            const std::int64_t mates_scan = noe.ms_mates < 0 ? 0 : noe.ms_mates;
+            const std::int64_t iso_full = ts.ms_iso < 0 ? 0 : ts.ms_iso;
+            const std::int64_t mates_full = ts.ms_mates < 0 ? 0 : ts.ms_mates;
+
+            std::cout << i << "\t" << T << "\t"
+                      << ts.mates_stats.pairs << "\t" << ts.mates_stats.fp_match << "\t"
+                      << ts.mates_stats.vf2_true << "\t"
+                      << mates_full << "\t" << mates_scan << "\t"
+                      << ts.iso_stats.pairs << "\t" << ts.iso_stats.fp_match << "\t"
+                      << ts.iso_stats.vf2_true << "\t"
+                      << iso_full << "\t" << iso_scan << "\t"
+                      << ts.ms_traversal << "\n";
+            continue;
+        }
 
         if (args.verify_resume) {
             TwinSearch ref(proj, min_k, max_k, true, true, false, false);

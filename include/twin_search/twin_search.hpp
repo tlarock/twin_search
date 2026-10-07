@@ -1,5 +1,6 @@
 #ifndef TWIN_SEARCH_H
 #define TWIN_SEARCH_H
+#include <cstdint>
 #include <memory>
 #include <iostream>
 #include <vector>
@@ -100,14 +101,43 @@ class TwinSearch {
         // Default constructor
         TwinSearch() {};
 
+        // How the two O(T^2) phases actually spend themselves.
+        //
+        // Neither phase does T^2/2 vf2 calls: a (|V|, |E|, degree-sequence)
+        // pre-filter runs first and vf2 only sees pairs that survive it. Which
+        // of the two dominates decides how much a canonical-form rewrite would
+        // buy, and it is not inferable from the totals.
+        struct PairStats {
+            std::uint64_t pairs = 0;      // (i, j) examined
+            std::uint64_t fp_match = 0;   // survived the pre-filter -> vf2 called
+            std::uint64_t vf2_true = 0;   // vf2 said isomorphic
+        };
+        PairStats iso_stats, mates_stats;
+
+        // Run the pre-filter but never call vf2. The RESULTS are wrong; the
+        // point is that timing a run with and without it attributes the phase
+        // between the cheap scan and the expensive confirmations, without
+        // putting a clock inside a loop that executes T^2/2 times.
+        bool skip_vf2_for_measurement = false;
+
+        // Wall time of each phase of parallel_search, in milliseconds. -1 if
+        // the phase did not run.
+        std::int64_t ms_traversal = -1;
+        std::int64_t ms_mates = -1;
+        std::int64_t ms_iso = -1;
+
         // Function signatures
         bool test_feasibility();
         void print_twins(const std::vector<std::vector<int> > &twins);
         void search(bool);
         void parallel_search(bool);
         // Declaring this function static for easier testing access and potential multi-use
-        static std::vector<int> run_iso_tests_parallel(std::vector<UndirectedGraph> &bipartites);
-        static std::vector<std::vector<int> > run_mates_tests_parallel(std::vector<UndirectedGraph > &line_graphs);
+        static std::vector<int> run_iso_tests_parallel(std::vector<UndirectedGraph> &bipartites,
+                                                      PairStats *stats = nullptr,
+                                                      bool skip_vf2 = false);
+        static std::vector<std::vector<int> > run_mates_tests_parallel(std::vector<UndirectedGraph > &line_graphs,
+                                                      PairStats *stats = nullptr,
+                                                      bool skip_vf2 = false);
         static long double compute_width_product(ProjectedGraph &proj, FactorGraph &fact);
         static double compute_log_width_product(ProjectedGraph &proj, FactorGraph &fact);
         std::vector<std::vector<int> > inflate_cnodes(const std::vector<int> &cnode_ids);
