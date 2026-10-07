@@ -379,8 +379,56 @@ What checkpointing does deliver, and it is still worth having:
 * it is the prerequisite for streaming twins to disk instead of accumulating
   them in RAM, which is the fix for the memory half of the problem.
 
-The other half needs canonical-form hashing (section 4). That is now the only
-identified route to finishing these cells.
+The other half needs the pairwise phases to stop being quadratic. That is now
+done; see section 7.
+
+## 7. The pairwise phases, fixed
+
+Two changes, both exactness-preserving, validated by A/B against the build that
+predates them.
+
+**The old pre-filter could not reject anything.** `(|V|, |E|, sorted degrees)`
+is CONSTANT across the twins of one projection when the hypergraph is uniform:
+summing row u gives `deg(u)*(k-1)`, so the degree sequence is fixed by P, and
+all the bipartite graphs share `|V| = n+m` and `|E| = m*k`. Measured: it
+admitted 100% of pairs on all 11 samples tried, vf2 then said "not isomorphic"
+every time, and vf2 was 99.1-99.8% of the phase. It is NOT useless in general -
+it does real work when `min_k < max_k` - so it was kept, not replaced.
+
+**Added: a 1-WL colour-refinement hash**, computed once per graph. Sound as a
+pre-filter because isomorphic graphs always share a stable colour multiset, so
+unequal hashes prove non-isomorphism; the converse fails for some graphs, which
+costs a wasted vf2 call and never a wrong answer.
+
+**Added: bucketing by that hash**, so only within-bucket pairs are examined at
+all. This is what removes the quadratic term, and it does not need the
+invariant to be complete: the exact vf2 test still runs inside a bucket, and
+the worst case (one big bucket) is exactly the old behaviour.
+
+Measured, k=3 n=9 m=37:
+
+| | original | + pre-filter | + grouping |
+|---|---|---|---|
+| isomorphism filter, 11 samples | 16,005 ms | 108 ms | 148 ms |
+| mates filter, 11 samples | 1,989 ms | 1,171 ms | 1,413 ms |
+| iso pairs examined | 9,051,406 | 9,051,406 | **0** |
+
+Every bucket is a singleton on these samples, so the all-pairs scan disappears.
+
+Grouping is a small LOSS below T ~ 3,000 - the hash map costs more than the
+scan it removes - and a win above: 1.06x at T=4,921, 1.12x at T=25,561. The
+scan runs at ~1.0 ns/pair, so the gap grows linearly: at T=10^6 that is 500 s
+of scanning against ~11 s of hashing. Against the ORIGINAL build the only
+regressions are +1 ms at T=16 and +1 ms at T=128.
+
+Correctness: output IDENTICAL to the original on 1,500 samples across k=3 n=7
+m=14, k=3 n=7 m=16 and k=4 n=8 m=20, including the 62 samples where the filter
+actually fires or mates exist.
+
+**Canonicalise before diffing.** Twins are written in completion order, which
+TBB makes nondeterministic, so two runs of the SAME binary differ line by line.
+Sort on ';' then '|' within the twin field, then sort rows. Comparing raw lines
+shows false differences - this cost an hour twice.
 * **Canonical-form isomorphism filtering** - section 4. Large, but only for the
   pairwise-bound population.
 * **Search-order heuristics** - `compute_edge_execution_order` (most-constrained
