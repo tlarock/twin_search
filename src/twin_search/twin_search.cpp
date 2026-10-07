@@ -6,6 +6,7 @@
 #include <float.h>
 #include <algorithm>
 #include <limits>
+#include <unordered_map>
 #include <boost/graph/vf2_sub_graph_iso.hpp>
 #include <oneapi/tbb.h>
 #include <oneapi/tbb/task_arena.h>
@@ -1005,6 +1006,51 @@ void TwinSearch::parallel_process_item(StackItem &s, tbb::concurrent_vector<std:
 //  NOTE: boost::vf2_graph_iso can not handle self-loops with undirectedS
 //  graphs. Proceed with caution.
 //
+// Group indices by colour-refinement hash, then record for each index which
+// group it is in and its position within it.
+//
+// This is what removes the quadratic term. Graphs with different hashes are
+// PROVABLY non-isomorphic, so a pair spanning two groups can never match and
+// never needs testing. Only within-group pairs are examined, and the exact
+// vf2 test still runs on those - so the invariant does not have to be
+// complete. A hash collision costs a wasted comparison, never a wrong answer,
+// and in the worst case (every graph in one group) this degrades exactly to
+// the old all-pairs behaviour.
+//
+// Positions are assigned in increasing index order, so "the predecessors of j
+// within its group" are exactly the i < j that could match it. That keeps the
+// representative choice - and therefore which twins get filtered - identical
+// to the all-pairs version.
+namespace {
+struct Grouping {
+    std::unordered_map<std::uint64_t, std::vector<std::size_t> > groups;
+    std::vector<const std::vector<std::size_t> *> of;   // index -> its group
+    std::vector<std::size_t> pos;                       // index -> position in it
+    std::size_t within_pairs = 0;                       // pairs left to examine
+};
+
+// Takes the hashes rather than the fingerprints so it needs no access to
+// TwinSearch's private types.
+Grouping group_by_hash(const std::vector<std::uint64_t> &wl) {
+    Grouping g;
+    const std::size_t N = wl.size();
+    g.groups.reserve(N * 2);
+    for (std::size_t j = 0; j < N; j++)
+        g.groups[wl[j]].push_back(j);
+    g.of.assign(N, nullptr);
+    g.pos.assign(N, 0);
+    for (const auto &kv : g.groups) {
+        const std::size_t sz = kv.second.size();
+        g.within_pairs += sz * (sz - 1) / 2;
+        for (std::size_t p = 0; p < sz; p++) {
+            g.of[kv.second[p]] = &kv.second;
+            g.pos[kv.second[p]] = p;
+        }
+    }
+    return g;
+}
+}  // namespace
+
 std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph> &bipartites,
                                                    PairStats *stats, bool skip_vf2) {
     std::vector<int> to_filter(bipartites.size());
@@ -1033,9 +1079,18 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
     // smallest index isomorphic to j. If i0 were itself filtered there would be
     // an i' < i0 isomorphic to i0 and hence to j, contradicting minimality. So
     // i0 is unfiltered and the old loop marked j at i = i0.
+    std::vector<std::uint64_t> wl(fps.size());
+    for (std::size_t i = 0; i < fps.size(); i++) wl[i] = fps[i].wl;
+    const Grouping grp = group_by_hash(wl);
+
+    // Still parallelised over j rather than over groups: a single large group
+    // would otherwise serialise the whole phase. Singleton groups give an empty
+    // inner loop, which is the common case and is why this is nearly free.
     tbb::parallel_for(std::size_t(1), bipartites.size(), [&](std::size_t j){
+        const std::vector<std::size_t> &g = *grp.of[j];
         PairStats &ls = local.local();
-        for (std::size_t i = 0; i < j; i++) {
+        for (std::size_t p = 0; p < grp.pos[j]; p++) {
+            const std::size_t i = g[p];
             ls.pairs++;
             if (!fingerprints_match(fps[i], fps[j]))
                 continue;
@@ -1046,7 +1101,7 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
             if ( boost::vf2_graph_iso(bipartites[i], bipartites[j], mc) ) {
                 ls.vf2_true++;
                 to_filter[j] = 1;
-                return;              // one witness is enough
+                break;               // one witness is enough
             }
         }
     });
@@ -1086,9 +1141,15 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
     // run_iso_tests_parallel. Every pair i < j is still tested, and unlike the
     // isomorphism filter there is no early exit, because every mate pair is
     // wanted rather than one witness.
+    std::vector<std::uint64_t> wl(fps.size());
+    for (std::size_t i = 0; i < fps.size(); i++) wl[i] = fps[i].wl;
+    const Grouping grp = group_by_hash(wl);
+
     tbb::parallel_for(std::size_t(1), line_graphs.size(), [&](std::size_t j){
+        const std::vector<std::size_t> &g = *grp.of[j];
         PairStats &ls = local.local();
-        for (std::size_t i = 0; i < j; i++) {
+        for (std::size_t p = 0; p < grp.pos[j]; p++) {
+                const std::size_t i = g[p];
                 ls.pairs++;
                 if (!fingerprints_match(fps[i], fps[j]))
                     continue;
