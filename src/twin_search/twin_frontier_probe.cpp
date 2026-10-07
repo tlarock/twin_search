@@ -25,6 +25,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <csignal>
 #include <cstdio>
 #include <sstream>
 #include <vector>
@@ -53,6 +54,7 @@ struct ProbeArgs : public argparse::Args {
     int &max_threads = kwarg("max-threads", "TBB parallelism limit.").set_default(0);
     bool &verify_resume = flag("verify-resume", "End-to-end check: run the sample to completion, then run it again draining at each --drain-at point, write a checkpoint, read it back, resume from it, and compare. The gate for the whole idea - an interrupted search must give the SAME answer, not a similar one.");
     std::string &ckpt_dir = kwarg("checkpoint-dir", "Where --verify-resume writes its checkpoint files.").set_default(std::string("/tmp"));
+    bool &drain_on_signal = flag("drain-on-signal", "Arm with no deadline and drain when SIGTERM arrives. This is the production backstop: SLURM's --signal=B:TERM@<n> reaches the driver through /usr/bin/time, and run_cell_array.sh already forwards it. Use with --verify-resume to prove the signal path end to end.");
     bool &full = flag("full", "Also run the sample to completion first, for a denominator. Can be very slow on exactly the samples this is aimed at.");
 };
 
@@ -72,6 +74,14 @@ static bool draw(int n, int m, int k, unsigned int seed, int i, Hypergraph &out)
     return false;
 }
 
+// A signal handler must do essentially nothing. This sets one lock-free
+// atomic and returns; the search notices on its next poll, finishes the node
+// it is on, and parks the rest. Nothing here allocates, locks or does I/O,
+// which is what makes it safe to run from a signal.
+extern "C" void twin_probe_on_term(int) {
+    twin_search_request_global_drain();
+}
+
 static std::vector<double> parse_doubles(const std::string &csv) {
     std::vector<double> out;
     std::stringstream ss(csv);
@@ -86,6 +96,9 @@ int main(int argc, char *argv[]) {
     const int n = args.n, m = args.m, k = args.k;
     const int min_k = args.min_k > 0 ? args.min_k : k;
     const int max_k = args.max_k > 0 ? args.max_k : k;
+
+    if (args.drain_on_signal)
+        std::signal(SIGTERM, twin_probe_on_term);
 
     std::unique_ptr<oneapi::tbb::global_control> thread_limit;
     if (args.max_threads > 0)
@@ -126,9 +139,19 @@ int main(int argc, char *argv[]) {
             for (std::vector<int> &g : ref_t) std::sort(g.begin(), g.end());
             std::sort(ref_t.begin(), ref_t.end());
 
-            for (double d : drains) {
+            // In signal mode there is one pass, armed with no deadline, and
+            // the drain point is whenever the signal lands.
+            std::vector<double> points = drains;
+            if (args.drain_on_signal) points.assign(1, -1.0);
+
+            for (double d : points) {
                 TwinSearch part(proj, min_k, max_k, true, true, false, false);
-                part.arm_drain(d);
+                if (d < 0) {
+                    part.arm_drain(0.0);   // no deadline: signal only
+                    std::cout << "# armed for SIGTERM, index " << i << std::endl;
+                } else {
+                    part.arm_drain(d);
+                }
                 part.parallel_search(true);
                 if (!part.drained) {
                     std::cout << "# i=" << i << " drain " << d << "s: completed first\n";
