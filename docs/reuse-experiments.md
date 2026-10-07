@@ -288,6 +288,19 @@ settles which population a sample is in:
 Across a whole m=48 cell the split is roughly 2/3 of time pairwise-bound, 1/3
 traversal-bound (model-based, using `c`, not measured per sample).
 
+**That split is an over-estimate of the traversal share, and the sign is
+known.** The classification compared `c * T^2`, which is an UNCONTENDED
+8-thread prediction, against `runtime_ms`, which is CONTENDED. Mixing the two
+makes samples look traversal-bound that are not. Caught when sample m=38
+i=188 - selected as "strongly traversal-bound" - turned out to have under
+500 ms of traversal and ~70 s of mates+iso. The correct filter de-contends
+first:
+
+    traversal_estimate = runtime_ms / 15 - c * T^2
+
+The straggler conclusion is unaffected: at T = 1,443 the pairwise estimate is
+2.1 s against thousands of seconds, a margin no calibration error touches.
+
 ### The isomorphism filter is the other target, and it is a near no-op
 
 Isomorphism classes / twins measured over whole cells: **1.000** (m=36, m=37),

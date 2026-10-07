@@ -12,6 +12,10 @@ add_executable(real_data_twins real_data_twins.cpp twin_search.cpp $<TARGET_OBJE
 
 add_executable(exact_mates exact_mates.cpp twin_search.cpp $<TARGET_OBJECTS:objlib>)
 
+# Step 0 for the checkpointing work: how big is the search frontier, and does
+# it plateau or grow? Decides whether checkpointing is feasible at all.
+add_executable(twin_frontier_probe twin_frontier_probe.cpp twin_search.cpp $<TARGET_OBJECTS:objlib>)
+
 # TBB::tbbmalloc_proxy replaces global new/delete with oneTBB's scalable
 # allocator. It is a link-time change only; no code calls it directly.
 #
@@ -40,7 +44,8 @@ set(TWIN_SEARCH_DRIVERS
     count_twins_random
     exhaustive_search_projections
     real_data_twins
-    exact_mates)
+    exact_mates
+    twin_frontier_probe)
 
 if(TWIN_SEARCH_SCALABLE_ALLOC AND NOT TARGET TBB::tbbmalloc_proxy)
     message(FATAL_ERROR

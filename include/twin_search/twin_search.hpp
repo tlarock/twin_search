@@ -1,5 +1,6 @@
 #ifndef TWIN_SEARCH_H
 #define TWIN_SEARCH_H
+#include <memory>
 #include <iostream>
 #include <vector>
 #include <map>
@@ -33,6 +34,31 @@ class TwinSearch {
 
         // if false, the desired search is impossible
         bool feasible;
+
+        // --- cooperative drain, for checkpointing and work-splitting ---
+        //
+        // A straggler fails because a single sample cannot be SPLIT, not
+        // because 24h is too little compute: resume_cell.sh resumes at sample
+        // granularity, so a sample needing 30h never finishes on the short
+        // partition however often it is resubmitted.
+        //
+        // arm_drain(t) makes parallel_search stop expanding after t seconds and
+        // PARK every outstanding node instead. What comes back is the frontier
+        // of the search tree - a set of independent subtrees whose union is
+        // exactly the remaining work - plus the twins found so far. Resuming
+        // means re-seeding the stack from the frontier; splitting means handing
+        // subtrees to different jobs.
+        //
+        // When this fires the twin set is PARTIAL, so parallel_search returns
+        // without running the mate tests or the isomorphism filter: both range
+        // over the whole set and would be wrong computed from a prefix. Check
+        // `drained` before touching `mates` or `filtered_twins`.
+        void arm_drain(double seconds);
+        bool drained = false;
+        // Parked partial hypergraphs, as clique-node id vectors. proj_rem is
+        // deliberately NOT kept: it is recomputable from the projection and the
+        // chosen cliques, and it is several times the size.
+        std::vector<std::vector<int> > frontier;
 
         // if true, only return twins with diagonal entries that match the
         // input projection. Otherwise, ignore the diagonal.
@@ -76,6 +102,12 @@ class TwinSearch {
         static bool fingerprints_match(const GraphFingerprint &a, const GraphFingerprint &b);
         //struct ParaReturn;
         std::vector<std::size_t> edge_execution_order;
+        // Held by shared_ptr so TwinSearch stays copy-assignable:
+        // count_twins_random does `twins = TwinSearch(...)`, and both
+        // std::atomic and TBB's enumerable_thread_specific would delete that.
+        struct DrainState;
+        std::shared_ptr<DrainState> drain_state;
+        bool drain_check(const StackItem &s);
         void process_item(std::vector<StackItem> &stack, StackItem &s, std::vector<UndirectedGraph> &bipartites, std::vector<GraphFingerprint> &fingerprints, std::vector<UndirectedGraph > &line_graphs, bool filter_isomorphic);
         void parallel_process_item(StackItem &s, tbb::concurrent_vector<std::vector<int> >&, std::vector<StackItem> &tmp_stack);
         void compute_bipartite_and_linegraph(std::vector<UndirectedGraph> &bipartites, std::vector<UndirectedGraph > &line_graphs, const int i, std::vector<int> &hypergraph);

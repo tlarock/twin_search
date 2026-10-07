@@ -1,4 +1,7 @@
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <oneapi/tbb/enumerable_thread_specific.h>
 #include "twin_search.hpp"
 #include <float.h>
 #include <algorithm>
@@ -155,6 +158,41 @@ bool TwinSearch::equivalent_lg(std::vector<ublas::matrix<int> > &line_graphs, co
         }
     }
 
+    return true;
+}
+
+// State for the cooperative drain.
+struct TwinSearch::DrainState {
+    std::atomic<bool> drain{false};
+    std::chrono::steady_clock::time_point deadline;
+    tbb::enumerable_thread_specific<std::uint64_t> local_count;
+    tbb::concurrent_vector<std::vector<int> > parked;
+};
+
+void TwinSearch::arm_drain(double seconds) {
+    drain_state = std::make_shared<DrainState>();
+    drain_state->deadline = std::chrono::steady_clock::now()
+        + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+              std::chrono::duration<double>(seconds));
+}
+
+// Returns true if this node was parked instead of expanded.
+bool TwinSearch::drain_check(const StackItem &s) {
+    DrainState &d = *drain_state;
+    std::uint64_t &c = d.local_count.local();
+    // Poll the clock once per 1024 nodes per thread. steady_clock::now() is a
+    // vDSO call - cheap, but this is the hottest loop in the program, and the
+    // drain does not need millisecond precision.
+    if (((++c) & 1023u) == 0u && !d.drain.load(std::memory_order_relaxed)) {
+        if (std::chrono::steady_clock::now() >= d.deadline)
+            d.drain.store(true, std::memory_order_relaxed);
+    }
+    if (!d.drain.load(std::memory_order_relaxed))
+        return false;
+    // Park rather than expand. Items already queued in the feeder are still
+    // handed to this function once each and parked here too, so the loop
+    // drains without having to reach inside TBB's feeder.
+    d.parked.push_back(s.hypergraph);
     return true;
 }
 
@@ -696,6 +734,13 @@ void TwinSearch::parallel_search(bool filter_isomorphic) {
         twins.push_back(std::move(hg));
     concurrent_twins.clear();
 
+    if (drain_state && drain_state->drain.load(std::memory_order_relaxed)) {
+        drained = true;
+        frontier.assign(drain_state->parked.begin(), drain_state->parked.end());
+        drain_state.reset();
+        return;
+    }
+
     // Line graphs and bipartites are each read by exactly ONE phase, and the
     // phases are sequential: the mates test never looks at a bipartite, and the
     // isomorphism filter never looks at a line graph. Building both up front
@@ -742,7 +787,8 @@ void TwinSearch::parallel_search(bool filter_isomorphic) {
 }
 
 void TwinSearch::parallel_process_item(StackItem &s, tbb::concurrent_vector<std::vector<int> > &concurrent_twins, std::vector<StackItem> &tmp_stack) {
-    //std::vector<StackItem> tmp_stack;
+    if (drain_state && drain_check(s))
+        return;
     // check if the sum of the modified projection is 0
     int proj_rem_sum = matsum(s.proj_rem);
     if (proj_rem_sum < 1) {
