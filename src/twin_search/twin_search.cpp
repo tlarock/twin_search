@@ -164,27 +164,52 @@ bool TwinSearch::equivalent_lg(std::vector<ublas::matrix<int> > &line_graphs, co
 // State for the cooperative drain.
 struct TwinSearch::DrainState {
     std::atomic<bool> drain{false};
+    bool deadline_set = false;
     std::chrono::steady_clock::time_point deadline;
+    std::uint64_t node_budget = 0;      // per thread; 0 = unused
     tbb::enumerable_thread_specific<std::uint64_t> local_count;
     tbb::concurrent_vector<std::vector<int> > parked;
 };
 
+// File-scope rather than a TwinSearch member: one process runs many samples
+// concurrently and a signal applies to all of them.
+static std::atomic<bool> g_drain_requested{false};
+void twin_search_request_global_drain()   { g_drain_requested.store(true, std::memory_order_relaxed); }
+bool twin_search_global_drain_requested() { return g_drain_requested.load(std::memory_order_relaxed); }
+void twin_search_clear_global_drain()     { g_drain_requested.store(false, std::memory_order_relaxed); }
+
 void TwinSearch::arm_drain(double seconds) {
     drain_state = std::make_shared<DrainState>();
-    drain_state->deadline = std::chrono::steady_clock::now()
-        + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-              std::chrono::duration<double>(seconds));
+    if (seconds > 0.0) {
+        drain_state->deadline_set = true;
+        drain_state->deadline = std::chrono::steady_clock::now()
+            + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                  std::chrono::duration<double>(seconds));
+    }
+}
+
+void TwinSearch::arm_drain_nodes(std::uint64_t nodes_per_thread) {
+    drain_state = std::make_shared<DrainState>();
+    drain_state->node_budget = nodes_per_thread;
 }
 
 // Returns true if this node was parked instead of expanded.
 bool TwinSearch::drain_check(const StackItem &s) {
     DrainState &d = *drain_state;
     std::uint64_t &c = d.local_count.local();
-    // Poll the clock once per 1024 nodes per thread. steady_clock::now() is a
-    // vDSO call - cheap, but this is the hottest loop in the program, and the
-    // drain does not need millisecond precision.
-    if (((++c) & 1023u) == 0u && !d.drain.load(std::memory_order_relaxed)) {
-        if (std::chrono::steady_clock::now() >= d.deadline)
+    ++c;
+    if (!d.drain.load(std::memory_order_relaxed)) {
+        bool fire = false;
+        if (d.node_budget > 0) {
+            fire = (c > d.node_budget);
+        } else if ((c & 1023u) == 0u) {
+            // Poll once per 1024 nodes per thread. steady_clock::now() is a
+            // vDSO call - cheap, but this is the hottest loop in the program,
+            // and neither trigger needs millisecond precision.
+            fire = twin_search_global_drain_requested()
+                || (d.deadline_set && std::chrono::steady_clock::now() >= d.deadline);
+        }
+        if (fire)
             d.drain.store(true, std::memory_order_relaxed);
     }
     if (!d.drain.load(std::memory_order_relaxed))
@@ -684,6 +709,57 @@ static void rss_mark(const char *phase, std::size_t n) {
               << " twins=" << n << std::endl;
 }
 
+int TwinSearch::cnode_for(const std::vector<int> &hyperedge) const {
+    std::vector<int> key = hyperedge;
+    std::sort(key.begin(), key.end());
+    auto it = fact.rev_node_map.find(key);
+    return it == fact.rev_node_map.end() ? -1 : it->second;
+}
+
+bool TwinSearch::residual_for(const std::vector<int> &hypergraph, ProjMatT &out) const {
+    out = ProjMatT(proj.proj_mat);
+    for (int cnode_id : hypergraph) {
+        auto it = fact.node_map.find(cnode_id);
+        if (it == fact.node_map.end())
+            return false;
+        const std::vector<int> &clique = it->second;
+        for (std::size_t i = 0; i < clique.size(); i++) {
+            for (std::size_t j = i + 1; j < clique.size(); j++) {
+                if (--out(clique[i], clique[j]) < 0)
+                    return false;
+                out(clique[j], clique[i]) = out(clique[i], clique[j]);
+            }
+            if (use_diagonal && --out(clique[i], clique[i]) < 0)
+                return false;
+        }
+    }
+    return true;
+}
+
+bool TwinSearch::parallel_search_from(const std::vector<std::vector<int> > &frontier_cnodes,
+                                      const std::vector<std::vector<int> > &twins_so_far,
+                                      bool filter_isomorphic) {
+    if (!feasible) {
+        diagnostic() << "parallel_search_from called on infeasible projection." << std::endl;
+        return false;
+    }
+    edge_execution_order = default_edge_execution_order();
+    std::vector<StackItem> seeds;
+    seeds.reserve(frontier_cnodes.size());
+    for (const std::vector<int> &hg : frontier_cnodes) {
+        ProjMatT r;
+        if (!residual_for(hg, r))
+            return false;     // not a valid prefix of this projection
+        // Index 0 rather than a stored position: every edge before the real one
+        // is already at zero, so process_item's skip loop lands on exactly the
+        // edge this item stopped at. One fewer thing the format has to get
+        // right, and one fewer thing that can go stale.
+        seeds.push_back(StackItem(hg, r, 0));
+    }
+    parallel_search_impl(seeds, twins_so_far, filter_isomorphic);
+    return true;
+}
+
 void TwinSearch::parallel_search(bool filter_isomorphic) {
     if (!feasible) {
         diagnostic() << "parallel_search() was called on infeasible projection. Returning without running search." << std::endl;
@@ -695,25 +771,31 @@ void TwinSearch::parallel_search(bool filter_isomorphic) {
         // containers are already empty and the message was a lie.
         return;
     }
-    tbb::concurrent_vector<std::vector<int> > concurrent_twins;
-    
-    // Initialize a stack representation using the StackItem struct
-    // Note: In the parallel version this is not really implementing
-    // a stack, it is actually a queue.
-    std::vector<StackItem> stack;
-
     // Get a vector of edge ids ordered by their constraint values
     // such that deterministic edges are solved first.
     edge_execution_order = default_edge_execution_order();
 
     // The first stackitem is always an empty hypergraph and the
-    // ProjectedGraph.proj_mat matrix from the input
-    StackItem s(std::vector<int> (0), ProjMatT(proj.proj_mat), 0);
-    std::vector<StackItem> init_stack(0);
-    parallel_process_item(s, concurrent_twins, init_stack);
-    for(StackItem new_item : init_stack) {
-        stack.push_back(StackItem(new_item));
-    }
+    // ProjectedGraph.proj_mat matrix from the input.
+    std::vector<StackItem> seeds;
+    seeds.push_back(StackItem(std::vector<int> (0), ProjMatT(proj.proj_mat), 0));
+    parallel_search_impl(seeds, std::vector<std::vector<int> >(), filter_isomorphic);
+}
+
+// Shared body of parallel_search and parallel_search_from. The only difference
+// between them is where the stack starts and whether any twins are already
+// known, so the three phases below - traversal, mates, isomorphism filter -
+// cannot drift apart between a fresh run and a resumed one.
+void TwinSearch::parallel_search_impl(std::vector<StackItem> &seeds,
+                                      const std::vector<std::vector<int> > &initial_twins,
+                                      bool filter_isomorphic) {
+    tbb::concurrent_vector<std::vector<int> > concurrent_twins;
+    for (const std::vector<int> &t : initial_twins)
+        concurrent_twins.push_back(t);
+
+    // Note: In the parallel version this is not really implementing
+    // a stack, it is actually a queue.
+    std::vector<StackItem> stack = seeds;
     tbb::parallel_for_each(stack.begin(), stack.end(),
             [&](StackItem &s, tbb::feeder<StackItem>& feeder) {
         std::vector<StackItem> tmp_stack(0);

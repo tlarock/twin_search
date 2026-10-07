@@ -53,12 +53,39 @@ class TwinSearch {
         // without running the mate tests or the isomorphism filter: both range
         // over the whole set and would be wrong computed from a prefix. Check
         // `drained` before touching `mates` or `filtered_twins`.
+        // Three ways to ask for a drain; all land in the same mechanism.
+        //
+        //   arm_drain(seconds)       wall-clock budget. <= 0 means no deadline,
+        //                            i.e. arm for the signal only.
+        //   arm_drain_nodes(n)       after n nodes PER THREAD. Deterministic at
+        //                            one thread, which is what the tests use -
+        //                            a wall-clock trigger would make them flaky.
+        //   request_global_drain()   from a signal handler. Free function below;
+        //                            an armed search polls it.
+        //
+        // An unarmed search never checks anything, so none of this costs
+        // production runs. See docs/reuse-experiments.md section 5.
         void arm_drain(double seconds);
+        void arm_drain_nodes(std::uint64_t nodes_per_thread);
         bool drained = false;
         // Parked partial hypergraphs, as clique-node id vectors. proj_rem is
         // deliberately NOT kept: it is recomputable from the projection and the
         // chosen cliques, and it is several times the size.
         std::vector<std::vector<int> > frontier;
+
+        // Re-seed from a drained frontier and continue. Both arguments are
+        // clique-node id vectors, as `frontier` and `twins` are produced.
+        // Returns false if the frontier does not fit this projection - a
+        // corrupt or mismatched checkpoint - rather than searching garbage.
+        bool parallel_search_from(const std::vector<std::vector<int> > &frontier_cnodes,
+                                  const std::vector<std::vector<int> > &twins_so_far,
+                                  bool filter_isomorphic);
+
+        // Clique-node id for a hyperedge, or -1 if the projection has no such
+        // clique. Checkpoints store hyperedges rather than ids, because ids
+        // depend on FactorGraph's construction order and a format should not
+        // rest on that.
+        int cnode_for(const std::vector<int> &hyperedge) const;
 
         // if true, only return twins with diagonal entries that match the
         // input projection. Otherwise, ignore the diagonal.
@@ -108,6 +135,13 @@ class TwinSearch {
         struct DrainState;
         std::shared_ptr<DrainState> drain_state;
         bool drain_check(const StackItem &s);
+        // proj.proj_mat minus the deltas of every clique in `hypergraph`.
+        // False if any entry would go negative, which means the partial
+        // hypergraph is not a valid prefix for this projection.
+        bool residual_for(const std::vector<int> &hypergraph, ProjMatT &out) const;
+        void parallel_search_impl(std::vector<StackItem> &seeds,
+                                  const std::vector<std::vector<int> > &initial_twins,
+                                  bool filter_isomorphic);
         void process_item(std::vector<StackItem> &stack, StackItem &s, std::vector<UndirectedGraph> &bipartites, std::vector<GraphFingerprint> &fingerprints, std::vector<UndirectedGraph > &line_graphs, bool filter_isomorphic);
         void parallel_process_item(StackItem &s, tbb::concurrent_vector<std::vector<int> >&, std::vector<StackItem> &tmp_stack);
         void compute_bipartite_and_linegraph(std::vector<UndirectedGraph> &bipartites, std::vector<UndirectedGraph > &line_graphs, const int i, std::vector<int> &hypergraph);
@@ -125,5 +159,14 @@ class TwinSearch {
         std::vector<std::size_t> compute_edge_execution_order();
         std::vector<std::size_t> default_edge_execution_order();
 };
+
+// Drain request from a signal handler.
+//
+// A handler must do essentially nothing, so it sets this flag and returns; the
+// search notices on its next poll. Separate from TwinSearch because one process
+// runs many samples concurrently and a signal applies to all of them.
+void twin_search_request_global_drain();
+bool twin_search_global_drain_requested();
+void twin_search_clear_global_drain();
 
 #endif

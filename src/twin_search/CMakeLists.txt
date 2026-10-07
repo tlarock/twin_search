@@ -2,7 +2,7 @@
 # because it does not properly link oneTBB if I include it
 # This allows object files to be created only once, without compiling into a library on disk
 # TODO: For some reason, compiling twin_search.cpp into the objlib fails to link. It would be good to fix this if possible.
-add_library(objlib OBJECT projected_graph.cpp hypergraph.cpp factor_graph.cpp random_hypergraph_generators.cpp utils.cpp)
+add_library(objlib OBJECT projected_graph.cpp hypergraph.cpp factor_graph.cpp random_hypergraph_generators.cpp utils.cpp search_checkpoint.cpp)
 
 add_executable(count_twins_random count_twins_random.cpp twin_search.cpp $<TARGET_OBJECTS:objlib>)
 

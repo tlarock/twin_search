@@ -25,6 +25,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <cstdio>
 #include <sstream>
 #include <vector>
 
@@ -36,6 +37,7 @@
 #include "hypergraph.hpp"
 #include "projected_graph.hpp"
 #include "twin_search.hpp"
+#include "search_checkpoint.hpp"
 #include "random_hypergraph_generators.hpp"
 #include "utils.hpp"
 
@@ -49,6 +51,8 @@ struct ProbeArgs : public argparse::Args {
     std::string &indices = kwarg("indices", "Comma-separated sample indices.").set_default(std::string("0"));
     std::string &drain_at = kwarg("drain-at", "Comma-separated wall-clock seconds at which to drain. One run per value.").set_default(std::string("1"));
     int &max_threads = kwarg("max-threads", "TBB parallelism limit.").set_default(0);
+    bool &verify_resume = flag("verify-resume", "End-to-end check: run the sample to completion, then run it again draining at each --drain-at point, write a checkpoint, read it back, resume from it, and compare. The gate for the whole idea - an interrupted search must give the SAME answer, not a similar one.");
+    std::string &ckpt_dir = kwarg("checkpoint-dir", "Where --verify-resume writes its checkpoint files.").set_default(std::string("/tmp"));
     bool &full = flag("full", "Also run the sample to completion first, for a denominator. Can be very slow on exactly the samples this is aimed at.");
 };
 
@@ -99,13 +103,87 @@ int main(int argc, char *argv[]) {
 
     std::cout << "# twin_frontier_probe  n=" << n << " m=" << m << " k=" << k
               << " seed=" << args.seed << "\n";
-    std::cout << "index\tdrain_s\twall_s\tfrontier\ttwins_so_far\tcnode_entries"
-                 "\tbytes_cnode\tbytes_hyperedge\n";
+    if (args.verify_resume)
+        std::cout << "index\tdrain_s\tfrontier\tbanked\tref_twins\tres_twins"
+                     "\tref_mates\tres_mates\tref_s\tresume_s\tverdict\n";
+    else
+        std::cout << "index\tdrain_s\twall_s\tfrontier\ttwins_so_far\tcnode_entries"
+                     "\tbytes_cnode\tbytes_hyperedge\n";
 
     for (int i : idxs) {
         Hypergraph h;
         if (!draw(n, m, k, args.seed, i, h)) { std::cout << i << "\tDRAW-FAILED\n"; continue; }
         ProjectedGraph proj(h);
+
+        if (args.verify_resume) {
+            TwinSearch ref(proj, min_k, max_k, true, true, false, false);
+            if (!ref.feasible) { std::cout << i << "\tINFEASIBLE\n"; continue; }
+            const auto r0 = std::chrono::steady_clock::now();
+            ref.parallel_search(true);
+            const double ref_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - r0).count();
+            std::vector<std::vector<int> > ref_t = ref.twins;
+            for (std::vector<int> &g : ref_t) std::sort(g.begin(), g.end());
+            std::sort(ref_t.begin(), ref_t.end());
+
+            for (double d : drains) {
+                TwinSearch part(proj, min_k, max_k, true, true, false, false);
+                part.arm_drain(d);
+                part.parallel_search(true);
+                if (!part.drained) {
+                    std::cout << "# i=" << i << " drain " << d << "s: completed first\n";
+                    continue;
+                }
+                SearchCheckpoint cp;
+                cp.n = n; cp.m = m; cp.k = k; cp.min_k = min_k; cp.max_k = max_k;
+                cp.seed = args.seed; cp.index = i;
+                cp.proj = twin_projection_key(proj.proj_mat);
+                for (const std::vector<int> &g : part.twins)
+                    cp.twins.push_back(part.inflate_cnodes(g));
+                for (const std::vector<int> &g : part.frontier)
+                    cp.frontier.push_back(part.inflate_cnodes(g));
+
+                const std::string path = args.ckpt_dir + "/twin-ckpt-" + std::to_string(i);
+                std::string err;
+                if (!write_checkpoint(path, cp, err)) { std::cout << "# write failed: " << err << "\n"; continue; }
+                SearchCheckpoint back;
+                if (!read_checkpoint(path, back, err)) { std::cout << "# read failed: " << err << "\n"; continue; }
+                if (back.proj != cp.proj) { std::cout << "# projection mismatch on reload\n"; continue; }
+
+                TwinSearch res(proj, min_k, max_k, true, true, false, false);
+                std::vector<std::vector<int> > fr, tw;
+                for (const std::vector<std::vector<int> > &g : back.frontier) {
+                    std::vector<int> cn;
+                    for (const std::vector<int> &he : g) cn.push_back(res.cnode_for(he));
+                    fr.push_back(cn);
+                }
+                for (const std::vector<std::vector<int> > &g : back.twins) {
+                    std::vector<int> cn;
+                    for (const std::vector<int> &he : g) cn.push_back(res.cnode_for(he));
+                    tw.push_back(cn);
+                }
+                const auto s0 = std::chrono::steady_clock::now();
+                const bool ok = res.parallel_search_from(fr, tw, true);
+                const double res_s = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - s0).count();
+                std::vector<std::vector<int> > res_t = res.twins;
+                for (std::vector<int> &g : res_t) std::sort(g.begin(), g.end());
+                std::sort(res_t.begin(), res_t.end());
+
+                const bool same = ok && res_t == ref_t
+                                  && res.mates.size() == ref.mates.size()
+                                  && res.filtered_twins.size() == ref.filtered_twins.size();
+                std::cout << i << "\t";
+                std::printf("%.2f\t", d);
+                std::cout << part.frontier.size() << "\t" << part.twins.size() << "\t"
+                          << ref.twins.size() << "\t" << res.twins.size() << "\t"
+                          << ref.mates.size() << "\t" << res.mates.size() << "\t";
+                std::printf("%.2f\t%.2f\t", ref_s, res_s);
+                std::cout << (same ? "IDENTICAL" : "MISMATCH") << "\n";
+                std::remove(path.c_str());
+            }
+            continue;
+        }
 
         if (args.full) {
             TwinSearch ts(proj, min_k, max_k, true, true, false, false);

@@ -4,7 +4,10 @@
 #include "projected_graph.hpp"
 #include "factor_graph.hpp"
 #include "utils.hpp"
+#include <filesystem>
+#include <fstream>
 #include "twin_search.hpp"
+#include "search_checkpoint.hpp"
 #include "test_hypergraphs.cpp"
 #include <gtest/gtest.h>
 
@@ -338,4 +341,168 @@ TEST(TwinSearchTest, WidthProductUnchangedForUniformSearches) {
     }
     EXPECT_DOUBLE_EQ(static_cast<double> (TwinSearch::compute_width_product(proj, fact)),
                      static_cast<double> (expected));
+}
+
+// --- checkpointing: drain, serialise, reload, resume ---
+//
+// The gate for the whole idea is one property: a search that was interrupted
+// and resumed must produce the SAME answer as one that ran straight through.
+// Not a similar twin count - the same twins, the same isomorphism classes, the
+// same mate pairs.
+//
+// n=7 m=14 was chosen by search rather than guessed: 20 twins, 11 after the
+// isomorphism filter and 9 mate pairs, so all three phases of parallel_search
+// actually produce something. A fixture whose filter removed nothing, or whose
+// mate set was empty, would pass while testing a third of the work.
+namespace {
+std::vector<std::vector<int> > resume_fixture() {
+    return {{0,1,2},{0,1,5},{0,2,3},{0,2,4},{0,3,4},{0,3,6},{0,4,6},
+            {0,5,6},{1,3,6},{1,4,5},{2,3,4},{2,3,5},{2,4,6},{2,5,6}};
+}
+std::vector<std::vector<int> > canon_twins(std::vector<std::vector<int> > v) {
+    for (std::vector<int> &g : v) std::sort(g.begin(), g.end());
+    std::sort(v.begin(), v.end());
+    return v;
+}
+// cnode vectors -> hyperedges -> cnode vectors, the round trip a checkpoint makes.
+std::vector<std::vector<int> > to_cnodes(
+        const std::vector<std::vector<std::vector<int> > > &graphs, TwinSearch &ts) {
+    std::vector<std::vector<int> > out;
+    for (const std::vector<std::vector<int> > &g : graphs) {
+        std::vector<int> cn;
+        for (const std::vector<int> &he : g) cn.push_back(ts.cnode_for(he));
+        out.push_back(cn);
+    }
+    return out;
+}
+}  // namespace
+
+TEST(TwinSearchTest, DrainedSearchResumesThroughAFileToTheSameAnswer) {
+    Hypergraph h(resume_fixture());
+    ProjectedGraph proj(h);
+
+    TwinSearch full(proj, 3, 3, true, true, false, false);
+    ASSERT_TRUE(full.feasible);
+    full.parallel_search(true);
+    ASSERT_EQ(full.twins.size(), 20u);
+    ASSERT_EQ(full.filtered_twins.size(), 11u);
+    ASSERT_EQ(full.mates.size(), 9u);
+
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "twin_ckpt_test").string();
+
+    // Several budgets so the drain lands at different depths, including right
+    // at the root. Per-thread, so the exact node is not deterministic - which
+    // is the point: the resume has to be correct wherever it stopped.
+    int drained_at_least_once = 0;
+    for (std::uint64_t budget : {std::uint64_t(1), std::uint64_t(3),
+                                 std::uint64_t(10), std::uint64_t(40)}) {
+        TwinSearch part(proj, 3, 3, true, true, false, false);
+        part.arm_drain_nodes(budget);
+        part.parallel_search(true);
+        if (!part.drained) continue;        // finished inside the budget
+        drained_at_least_once++;
+
+        // A drained search must NOT have run the two pairwise phases: they
+        // range over the whole twin set and would be wrong from a prefix.
+        EXPECT_TRUE(part.mates.empty());
+        EXPECT_TRUE(part.filtered_twins.empty());
+
+        SearchCheckpoint cp;
+        cp.n = 7; cp.m = 14; cp.k = 3; cp.min_k = 3; cp.max_k = 3;
+        cp.commit = "test";
+        cp.proj = twin_projection_key(proj.proj_mat);
+        for (const std::vector<int> &g : part.twins)
+            cp.twins.push_back(part.inflate_cnodes(g));
+        for (const std::vector<int> &g : part.frontier)
+            cp.frontier.push_back(part.inflate_cnodes(g));
+
+        std::string err;
+        ASSERT_TRUE(write_checkpoint(path, cp, err)) << err;
+        SearchCheckpoint back;
+        ASSERT_TRUE(read_checkpoint(path, back, err)) << err;
+        EXPECT_EQ(back.proj, cp.proj);
+        EXPECT_EQ(back.twins.size(), cp.twins.size());
+        EXPECT_EQ(back.frontier.size(), cp.frontier.size());
+
+        TwinSearch res(proj, 3, 3, true, true, false, false);
+        ASSERT_TRUE(res.parallel_search_from(to_cnodes(back.frontier, res),
+                                             to_cnodes(back.twins, res), true));
+        EXPECT_EQ(canon_twins(res.twins), canon_twins(full.twins))
+            << "budget " << budget;
+        EXPECT_EQ(res.filtered_twins.size(), full.filtered_twins.size());
+        EXPECT_EQ(res.mates.size(), full.mates.size());
+    }
+    EXPECT_GT(drained_at_least_once, 0);
+    std::filesystem::remove(path);
+}
+
+TEST(TwinSearchTest, TruncatedCheckpointIsRejectedRatherThanPartlyRead) {
+    // The reason the format has an end sentinel. A file cut short by a kill
+    // mid-write would otherwise parse as a shorter but perfectly valid
+    // checkpoint, and the resume would silently drop part of the search tree -
+    // producing too few twins with nothing to indicate why.
+    Hypergraph h(resume_fixture());
+    ProjectedGraph proj(h);
+    TwinSearch part(proj, 3, 3, true, true, false, false);
+    part.arm_drain_nodes(3);
+    part.parallel_search(true);
+    ASSERT_TRUE(part.drained);
+
+    SearchCheckpoint cp;
+    cp.n = 7; cp.m = 14; cp.k = 3; cp.min_k = 3; cp.max_k = 3;
+    cp.proj = twin_projection_key(proj.proj_mat);
+    for (const std::vector<int> &g : part.frontier)
+        cp.frontier.push_back(part.inflate_cnodes(g));
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "twin_ckpt_trunc").string();
+    std::string err;
+    ASSERT_TRUE(write_checkpoint(path, cp, err)) << err;
+
+    std::vector<std::string> lines;
+    { std::ifstream is(path); std::string l; while (std::getline(is, l)) lines.push_back(l); }
+    ASSERT_GT(lines.size(), 3u);
+    { std::ofstream os(path, std::ios::trunc);
+      for (std::size_t i = 0; i + 1 < lines.size(); i++) os << lines[i] << '\n'; }
+
+    SearchCheckpoint back;
+    EXPECT_FALSE(read_checkpoint(path, back, err));
+    EXPECT_NE(err.find("#end"), std::string::npos) << "got: " << err;
+    std::filesystem::remove(path);
+}
+
+TEST(TwinSearchTest, FrontierFromTheWrongProjectionIsRefused) {
+    // residual_for returns false when a parked hypergraph is not a valid prefix
+    // of this projection. Without that, a checkpoint from a different sample
+    // would search a tree that has nothing to do with the projection in hand
+    // and return a confident wrong answer.
+    Hypergraph a(resume_fixture());
+    std::vector<std::vector<int> > other = resume_fixture();
+    other[0] = {1, 2, 3};                       // perturb one hyperedge
+    Hypergraph b(other);
+    ProjectedGraph pa(a), pb(b);
+
+    TwinSearch sa(pa, 3, 3, true, true, false, false);
+    sa.arm_drain_nodes(5);
+    sa.parallel_search(true);
+    ASSERT_TRUE(sa.drained);
+    ASSERT_FALSE(sa.frontier.empty());
+
+    TwinSearch sb(pb, 3, 3, true, true, false, false);
+    std::vector<std::vector<int> > mapped;
+    bool mappable = true;
+    for (const std::vector<int> &g : sa.frontier) {
+        std::vector<int> cn;
+        for (const std::vector<int> &he : sa.inflate_cnodes(g)) {
+            const int c = sb.cnode_for(he);
+            if (c < 0) { mappable = false; break; }
+            cn.push_back(c);
+        }
+        if (!mappable) break;
+        mapped.push_back(cn);
+    }
+    // Either a hyperedge has no clique in the other projection, or it does and
+    // the residual goes negative. Both are refusals; neither may be a search.
+    if (mappable)
+        EXPECT_FALSE(sb.parallel_search_from(mapped, {}, true));
 }
