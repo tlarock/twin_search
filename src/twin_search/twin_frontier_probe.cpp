@@ -26,6 +26,7 @@
 #include <memory>
 #include <random>
 #include <csignal>
+#include <fstream>
 #include <cstdio>
 #include <sstream>
 #include <vector>
@@ -56,6 +57,10 @@ struct ProbeArgs : public argparse::Args {
     std::string &ckpt_dir = kwarg("checkpoint-dir", "Where --verify-resume writes its checkpoint files.").set_default(std::string("/tmp"));
     bool &drain_on_signal = flag("drain-on-signal", "Arm with no deadline and drain when SIGTERM arrives. This is the production backstop: SLURM's --signal=B:TERM@<n> reaches the driver through /usr/bin/time, and run_cell_array.sh already forwards it. Use with --verify-resume to prove the signal path end to end.");
     bool &pair_stats = flag("pair-stats", "Where do the two O(T^2) phases actually go? Reports pairs examined, how many survive the (|V|,|E|,degree-sequence) pre-filter into a vf2 call, and how many vf2 confirms - then repeats the run with vf2 suppressed, so the phase time splits into cheap scan versus expensive confirmation. That split decides what a canonical-form rewrite would buy.");
+    std::string &replay = kwarg("replay", "Path to a finished results CSV. Loads the twin set from a row and times ONLY the pairwise phases on it - no search. The twins are already section 4 of every row, so this measures the phases at twin counts that would take hours to reach by searching.").set_default(std::string());
+    bool &iso_only = flag("iso-only", "Replay only the isomorphism phase, never building line graphs. Halves peak memory, which is what makes the biggest real twin sets replayable locally.");
+    bool &no_grouping = flag("no-grouping", "Put every graph in one bucket, reproducing the all-pairs behaviour from before grouping. For A/B on identical data in one binary.");
+    std::string &replay_rows = kwarg("replay-rows", "Comma-separated 1-based row numbers to replay.").set_default(std::string("1"));
     bool &full = flag("full", "Also run the sample to completion first, for a denominator. Can be very slow on exactly the samples this is aimed at.");
 };
 
@@ -91,6 +96,44 @@ static std::vector<double> parse_doubles(const std::string &csv) {
     return out;
 }
 
+// Parse one result row into its twins, as hyperedge lists.
+//
+// Layout is scalars/(size-dist/counts)*/twins, twins ';'-separated and
+// hyperedges within a twin '|'-separated. Mirrors resume_missing.py.
+static bool parse_row_twins(const std::string &line,
+                            std::vector<std::vector<std::vector<int> > > &out) {
+    std::vector<std::string> parts;
+    {
+        std::stringstream ss(line);
+        std::string f;
+        while (std::getline(ss, f, '/')) parts.push_back(f);
+    }
+    if (parts.size() < 2) return false;
+    std::size_t idx = 1;
+    while (idx + 1 < parts.size()
+           && parts[idx].find(':') != std::string::npos
+           && parts[idx + 1].find(',') != std::string::npos)
+        idx += 2;
+    if (idx >= parts.size() || parts[idx].empty()) return false;
+    out.clear();
+    std::stringstream ts(parts[idx]);
+    std::string tw;
+    while (std::getline(ts, tw, ';')) {
+        std::vector<std::vector<int> > g;
+        std::stringstream hs(tw);
+        std::string he;
+        while (std::getline(hs, he, '|')) {
+            std::vector<int> nodes;
+            std::stringstream ns(he);
+            std::string tok;
+            while (std::getline(ns, tok, ':')) nodes.push_back(std::stoi(tok));
+            g.push_back(nodes);
+        }
+        out.push_back(g);
+    }
+    return !out.empty();
+}
+
 int main(int argc, char *argv[]) {
     std::cout.setf(std::ios::unitbuf);
     auto args = argparse::parse<ProbeArgs>(argc, argv);
@@ -106,6 +149,60 @@ int main(int argc, char *argv[]) {
         thread_limit = std::make_unique<oneapi::tbb::global_control>(
             oneapi::tbb::global_control::max_allowed_parallelism,
             static_cast<std::size_t>(args.max_threads));
+
+    if (!args.replay.empty()) {
+        std::vector<std::size_t> rows;
+        {
+            std::stringstream ss(args.replay_rows);
+            std::string tok;
+            while (std::getline(ss, tok, ',')) if (!tok.empty()) rows.push_back(std::stoul(tok));
+        }
+        std::cout << "row\ttwins\tiso_classes\tmates\tbuckets\tmax_bucket"
+                     "\tiso_pairs\tiso_ms\tmate_pairs\tmate_ms\tload_s\n";
+        for (std::size_t want : rows) {
+            std::ifstream is(args.replay);
+            if (!is) { std::cout << "# cannot open " << args.replay << "\n"; break; }
+            std::string line;
+            for (std::size_t r = 0; r < want && std::getline(is, line); r++) {}
+            std::vector<std::vector<std::vector<int> > > tw;
+            if (!parse_row_twins(line, tw)) { std::cout << "# row " << want << " unparseable\n"; continue; }
+
+            const auto l0 = std::chrono::steady_clock::now();
+            // Any twin has the row's projection by definition, so the first one
+            // rebuilds the search object the rest were produced by.
+            Hypergraph h(tw[0]);
+            ProjectedGraph proj(h);
+            TwinSearch ts(proj, min_k > 0 ? min_k : k, max_k > 0 ? max_k : k,
+                          true, true, false, false);
+            if (!ts.feasible) { std::cout << "# row " << want << " infeasible\n"; continue; }
+            bool ok = true;
+            ts.twins.reserve(tw.size());
+            for (const std::vector<std::vector<int> > &g : tw) {
+                std::vector<int> cn;
+                cn.reserve(g.size());
+                for (const std::vector<int> &he : g) {
+                    const int c = ts.cnode_for(he);
+                    if (c < 0) { ok = false; break; }
+                    cn.push_back(c);
+                }
+                if (!ok) break;
+                ts.twins.push_back(cn);
+            }
+            if (!ok) { std::cout << "# row " << want << ": a hyperedge has no clique in the projection\n"; continue; }
+            const double load_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - l0).count();
+
+            ts.disable_grouping_for_measurement = args.no_grouping;
+            ts.run_pairwise_phases(true, args.iso_only);
+            std::cout << want << "\t" << ts.twins.size() << "\t"
+                      << ts.filtered_twins.size() << "\t" << ts.mates.size() << "\t"
+                      << ts.iso_stats.groups << "\t" << ts.iso_stats.max_group << "\t"
+                      << ts.iso_stats.pairs << "\t" << ts.ms_iso << "\t"
+                      << ts.mates_stats.pairs << "\t" << ts.ms_mates << "\t";
+            std::printf("%.2f\n", load_s);
+        }
+        return 0;
+    }
 
     std::vector<int> idxs;
     {

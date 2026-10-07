@@ -111,6 +111,8 @@ class TwinSearch {
             std::uint64_t pairs = 0;      // (i, j) examined
             std::uint64_t fp_match = 0;   // survived the pre-filter -> vf2 called
             std::uint64_t vf2_true = 0;   // vf2 said isomorphic
+            std::uint64_t groups = 0;     // distinct invariant buckets
+            std::uint64_t max_group = 0;  // largest bucket
         };
         PairStats iso_stats, mates_stats;
 
@@ -119,6 +121,13 @@ class TwinSearch {
         // between the cheap scan and the expensive confirmations, without
         // putting a clock inside a loop that executes T^2/2 times.
         bool skip_vf2_for_measurement = false;
+
+        // Put every graph in one bucket, so all pairs are examined. This is
+        // exactly the behaviour before grouping, and having it as a switch
+        // means the two can be compared in ONE binary on the same data - and
+        // it exercises the degenerate case the grouping is supposed to degrade
+        // to gracefully.
+        bool disable_grouping_for_measurement = false;
 
         // Wall time of each phase of parallel_search, in milliseconds. -1 if
         // the phase did not run.
@@ -131,13 +140,26 @@ class TwinSearch {
         void print_twins(const std::vector<std::vector<int> > &twins);
         void search(bool);
         void parallel_search(bool);
+        // Everything after the traversal: line graphs + mate tests, then
+        // bipartites + isomorphism filter, both over the whole of `twins`.
+        //
+        // Public so a twin set can be loaded from a finished result row and
+        // the pairwise phases timed on it WITHOUT re-running the search. That
+        // is the only way to measure these phases at the twin counts that
+        // actually matter - a sample with 200k twins takes hours to search and
+        // milliseconds to replay.
+        // skip_mates halves peak memory by never building the line graphs,
+        // which is what makes the largest real twin sets replayable locally.
+        void run_pairwise_phases(bool filter_isomorphic, bool skip_mates = false);
         // Declaring this function static for easier testing access and potential multi-use
         static std::vector<int> run_iso_tests_parallel(std::vector<UndirectedGraph> &bipartites,
                                                       PairStats *stats = nullptr,
-                                                      bool skip_vf2 = false);
+                                                      bool skip_vf2 = false,
+                                                      bool disable_grouping = false);
         static std::vector<std::vector<int> > run_mates_tests_parallel(std::vector<UndirectedGraph > &line_graphs,
                                                       PairStats *stats = nullptr,
-                                                      bool skip_vf2 = false);
+                                                      bool skip_vf2 = false,
+                                                      bool disable_grouping = false);
         static long double compute_width_product(ProjectedGraph &proj, FactorGraph &fact);
         static double compute_log_width_product(ProjectedGraph &proj, FactorGraph &fact);
         std::vector<std::vector<int> > inflate_cnodes(const std::vector<int> &cnode_ids);

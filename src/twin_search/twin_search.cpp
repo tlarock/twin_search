@@ -141,14 +141,24 @@ TwinSearch::GraphFingerprint TwinSearch::compute_fingerprint(const UndirectedGra
     return fp;
 }
 
-// Deliberately serial: this is O(T * V log V) against the O(T^2) vf2 work it
-// saves, so parallelising it buys nothing measurable, and it keeps one more
-// nested TBB region out of a call path that is already nested two deep.
+// This used to be deliberately serial, on the argument that O(T * V log V) is
+// nothing against the O(T^2) vf2 work it saves. That was true, and then the
+// colour-refinement hash and the bucketing removed the O(T^2) work it was
+// being compared against - so the serial pass became the bottleneck, and the
+// hash made it more expensive at the same time.
+//
+// Measured on a real twin set of 57,812 graphs replayed from disk: grouping
+// examined 0 pairs instead of 1.67e9 and was still 2.4x SLOWER overall,
+// because this loop is O(T) serial while the pairs it eliminated ran at
+// 0.78 ns each across 8 threads. Removing a quadratic term does not help if a
+// linear one is left on one core.
 std::vector<TwinSearch::GraphFingerprint> TwinSearch::compute_fingerprints(const std::vector<UndirectedGraph> &graphs) {
-    std::vector<GraphFingerprint> fps;
-    fps.reserve(graphs.size());
-    for (const UndirectedGraph &g : graphs)
-        fps.push_back(compute_fingerprint(g));
+    std::vector<GraphFingerprint> fps(graphs.size());
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, graphs.size()),
+                      [&](const tbb::blocked_range<std::size_t> &r) {
+        for (std::size_t i = r.begin(); i < r.end(); i++)
+            fps[i] = compute_fingerprint(graphs[i]);
+    });
     return fps;
 }
 
@@ -930,7 +940,20 @@ void TwinSearch::parallel_search_impl(std::vector<StackItem> &seeds,
     //   twins + line_graphs + bipartites.
     // The cost is recomputing each hypergraph's incidence matrix twice, which
     // is trivial next to the graph it feeds.
-    {
+    run_pairwise_phases(filter_isomorphic);
+}
+
+void TwinSearch::run_pairwise_phases(bool filter_isomorphic, bool skip_mates) {
+    std::chrono::high_resolution_clock phase_clock;
+    auto phase_start = phase_clock.now();
+    auto phase_ms = [&]() {
+        const auto now = phase_clock.now();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - phase_start).count();
+        phase_start = now;
+        return static_cast<std::int64_t>(ms);
+    };
+
+    if (!skip_mates) {
         std::vector<UndirectedGraph> line_graphs(twins.size());
         tbb::parallel_for(tbb::blocked_range<int>(0, twins.size()),
                            [&](tbb::blocked_range<int> r) {
@@ -938,7 +961,7 @@ void TwinSearch::parallel_search_impl(std::vector<StackItem> &seeds,
                 line_graphs[i] = compute_linegraph(twins[i]);
         });
         rss_mark("line_graphs_built", twins.size());
-        mates = run_mates_tests_parallel(line_graphs, &mates_stats, skip_vf2_for_measurement);
+        mates = run_mates_tests_parallel(line_graphs, &mates_stats, skip_vf2_for_measurement, disable_grouping_for_measurement);
         rss_mark("after_mates", twins.size());
     }
     ms_mates = phase_ms();
@@ -954,7 +977,7 @@ void TwinSearch::parallel_search_impl(std::vector<StackItem> &seeds,
                 bipartites[i] = compute_bipartite(twins[i]);
         });
         rss_mark("bipartites_built", twins.size());
-        std::vector<int> to_filter = TwinSearch::run_iso_tests_parallel(bipartites, &iso_stats, skip_vf2_for_measurement);
+        std::vector<int> to_filter = TwinSearch::run_iso_tests_parallel(bipartites, &iso_stats, skip_vf2_for_measurement, disable_grouping_for_measurement);
         rss_mark("after_iso", twins.size());
         for(std::size_t i = 0; i < twins.size(); i++) {
             if (to_filter[i] == 0)
@@ -1031,12 +1054,12 @@ struct Grouping {
 
 // Takes the hashes rather than the fingerprints so it needs no access to
 // TwinSearch's private types.
-Grouping group_by_hash(const std::vector<std::uint64_t> &wl) {
+Grouping group_by_hash(const std::vector<std::uint64_t> &wl, bool disable) {
     Grouping g;
     const std::size_t N = wl.size();
     g.groups.reserve(N * 2);
     for (std::size_t j = 0; j < N; j++)
-        g.groups[wl[j]].push_back(j);
+        g.groups[disable ? 0u : wl[j]].push_back(j);
     g.of.assign(N, nullptr);
     g.pos.assign(N, 0);
     for (const auto &kv : g.groups) {
@@ -1052,7 +1075,8 @@ Grouping group_by_hash(const std::vector<std::uint64_t> &wl) {
 }  // namespace
 
 std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph> &bipartites,
-                                                   PairStats *stats, bool skip_vf2) {
+                                                   PairStats *stats, bool skip_vf2,
+                                                   bool disable_grouping) {
     std::vector<int> to_filter(bipartites.size());
     if (bipartites.size() < 2)
         return to_filter;
@@ -1081,7 +1105,7 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
     // i0 is unfiltered and the old loop marked j at i = i0.
     std::vector<std::uint64_t> wl(fps.size());
     for (std::size_t i = 0; i < fps.size(); i++) wl[i] = fps[i].wl;
-    const Grouping grp = group_by_hash(wl);
+    const Grouping grp = group_by_hash(wl, disable_grouping);
 
     // Still parallelised over j rather than over groups: a single large group
     // would otherwise serialise the whole phase. Singleton groups give an empty
@@ -1113,6 +1137,9 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
             stats->fp_match += ls.fp_match;
             stats->vf2_true += ls.vf2_true;
         }
+        stats->groups = grp.groups.size();
+        for (const auto &kv : grp.groups)
+            stats->max_group = std::max<std::uint64_t>(stats->max_group, kv.second.size());
     }
     return to_filter;
 }
@@ -1129,7 +1156,8 @@ std::vector<int> TwinSearch::run_iso_tests_parallel(std::vector<UndirectedGraph>
 // graphs. Proceed with caution.
 //
 std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<UndirectedGraph> &line_graphs,
-                                                   PairStats *stats, bool skip_vf2) {
+                                                   PairStats *stats, bool skip_vf2,
+                                                   bool disable_grouping) {
     tbb::concurrent_vector<std::vector<int> > mate_pairs;
     if (line_graphs.size() < 2)
         return std::vector<std::vector<int> >(0);
@@ -1143,7 +1171,7 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
     // wanted rather than one witness.
     std::vector<std::uint64_t> wl(fps.size());
     for (std::size_t i = 0; i < fps.size(); i++) wl[i] = fps[i].wl;
-    const Grouping grp = group_by_hash(wl);
+    const Grouping grp = group_by_hash(wl, disable_grouping);
 
     tbb::parallel_for(std::size_t(1), line_graphs.size(), [&](std::size_t j){
         const std::vector<std::size_t> &g = *grp.of[j];
@@ -1177,6 +1205,9 @@ std::vector<std::vector<int> > TwinSearch::run_mates_tests_parallel(std::vector<
             stats->fp_match += ls.fp_match;
             stats->vf2_true += ls.vf2_true;
         }
+        stats->groups = grp.groups.size();
+        for (const auto &kv : grp.groups)
+            stats->max_group = std::max<std::uint64_t>(stats->max_group, kv.second.size());
     }
 
     // put in an std vector for return
