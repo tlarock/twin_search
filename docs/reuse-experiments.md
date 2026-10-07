@@ -323,12 +323,64 @@ as a cost.
 
 ## 5. What remains open
 
-* **Checkpointing the search** - the straggler problem is that a single sample
-  cannot be SPLIT, not that 24 hours is too little compute. `resume_cell.sh`
-  resumes at sample granularity, so a sample needing 30 hours never finishes on
-  the short partition however often it is resubmitted. The search state is an
-  explicit stack, so serialising the frontier is tractable. Gating question,
-  which must be measured FIRST (see section 0): how large is the frontier?
+* **Checkpointing the search** - BUILT, and it works (see section 6). But the
+  measurement that justified it turned out to describe the wrong thing; read
+  section 6 before relying on it.
+
+## 6. Checkpointing, and what the m=48 failures actually are
+
+The frontier is tiny and flat. Measured by draining `parallel_search` at
+several wall-clock points:
+
+| sample | drain at | frontier items | serialised | twins banked |
+|---|---|---|---|---|
+| m=37 i=423 | 0.25-2.0 s | 213-252 | ~10 KB | - |
+| m=48 i=75 | 1-24 s | 248-296 | ~16 KB | 12 K -> 275 K |
+| m=48 i=365 | 30-120 s | 199-211 | ~12 KB | 52 K -> 234 K |
+
+Flat because TBB work-steals depth-first per thread, so outstanding work is
+O(threads x depth) and depth is bounded by the edge-node count (36 at n=9), not
+by tree size. Checkpointing is therefore nearly free and can be taken often.
+
+**But the six m=48 non-completions are not what they looked like.** Draining
+each of them - which is the only way to measure a sample that never finishes -
+gives three different things:
+
+| indices | what they are |
+|---|---|
+| 187, 247 | complete in 8.0 s and 0.3 s. Not stragglers; they were simply never run before the wall |
+| 75, 207, 246 | twin-explosive: 12 K-55 K twins within 3 s and climbing |
+| 365 | also twin-explosive: 3.9 K at 3 s, 51.7 K at 30 s, 234 K at 120 s |
+
+So the wall-busting samples are **twin-explosive, not traversal-bound**. The
+earlier claim that stragglers are traversal-bound came from index 314's
+recorded `runtime_ms`, which section 4 shows is not a cost. Direct measurement
+says the opposite.
+
+That matters because it changes what the binding constraint is:
+
+* **Memory** - the twin set is what OOMs, not the frontier. A container with
+  7.7 GB died inside 60 s on index 75.
+* **The O(T^2) tail** - at `c ~= 1.0e-3 ms/twin-pair`, T = 1e6 twins is ~280
+  hours of mates+iso and T = 1e7 is years. Even the fingerprint pre-filter does
+  not help: the comparison itself is O(T^2). Extrapolated from a fit at
+  T ~ 1300-2600, so treat the exponent as solid and the constant as indicative.
+
+**These samples are therefore not slow. They are infeasible under the current
+pairwise post-processing**, and no amount of checkpointing or splitting changes
+that - both act on traversal.
+
+What checkpointing does deliver, and it is still worth having:
+
+* partial work survives timeout, preemption and - with an intrinsic trigger -
+  OOM, which SIGTERM cannot catch;
+* the frontier's subtrees are independent, so traversal can be fanned out
+  across jobs rather than resumed serially;
+* it is the prerequisite for streaming twins to disk instead of accumulating
+  them in RAM, which is the fix for the memory half of the problem.
+
+The other half needs canonical-form hashing (section 4). That is now the only
+identified route to finishing these cells.
 * **Canonical-form isomorphism filtering** - section 4. Large, but only for the
   pairwise-bound population.
 * **Search-order heuristics** - `compute_edge_execution_order` (most-constrained
