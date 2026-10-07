@@ -118,7 +118,7 @@ int main(int argc, char *argv[]) {
     std::cout << "# twin_frontier_probe  n=" << n << " m=" << m << " k=" << k
               << " seed=" << args.seed << "\n";
     if (args.pair_stats)
-        std::cout << "index\ttwins\tmate_pairs\tmate_fpmatch\tmate_true\tmate_ms"
+        std::cout << "index\ttwins\tiso_classes\tmates\tmate_pairs\tmate_fpmatch\tmate_true\tmate_ms"
                      "\tmate_scan_ms\tiso_pairs\tiso_fpmatch\tiso_true\tiso_ms"
                      "\tiso_scan_ms\ttrav_ms\n";
     else if (args.verify_resume)
@@ -151,6 +151,7 @@ int main(int argc, char *argv[]) {
             const std::int64_t mates_full = ts.ms_mates < 0 ? 0 : ts.ms_mates;
 
             std::cout << i << "\t" << T << "\t"
+                      << ts.filtered_twins.size() << "\t" << ts.mates.size() << "\t"
                       << ts.mates_stats.pairs << "\t" << ts.mates_stats.fp_match << "\t"
                       << ts.mates_stats.vf2_true << "\t"
                       << mates_full << "\t" << mates_scan << "\t"

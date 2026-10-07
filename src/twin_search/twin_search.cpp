@@ -37,13 +37,95 @@ struct TwinSearch::StackItem {
 struct TwinSearch::GraphFingerprint {
     std::size_t num_vertices = 0;
     std::size_t num_edges = 0;
+    std::uint64_t wl = 0;               // colour-refinement hash
     std::vector<std::size_t> degrees;   // ascending
 };
 
 bool TwinSearch::fingerprints_match(const GraphFingerprint &a, const GraphFingerprint &b) {
+    // Scalars first, vector last. This predicate is evaluated T^2/2 times, and
+    // the common answer is "no": with the wl hash in front, the usual case
+    // costs three integer comparisons instead of an O(|V|) vector compare.
     return a.num_vertices == b.num_vertices
         && a.num_edges == b.num_edges
+        && a.wl == b.wl
         && a.degrees == b.degrees;
+}
+
+// 1-WL colour refinement, hashed.
+//
+// WHY THE DEGREE SEQUENCE IS NOT ENOUGH. For k-uniform twins of a fixed
+// projection P, every twin has the same degree sequence by construction:
+// summing P's row u gives deg(u)*(k-1), so deg(u) is determined by P alone,
+// and the bipartite incidence graphs all share |V| = n+m, |E| = m*k and that
+// same sequence. Measured on 11 real samples, the old fingerprint admitted
+// 100% of pairs - every single one went to vf2, and vf2 said "not isomorphic"
+// every single time. vf2 was 99.1-99.8% of the phase.
+//
+// WHY THIS IS SOUND. Colour refinement is an isomorphism INVARIANT: isomorphic
+// graphs always produce the same multiset of stable colours, so equal hashes
+// are necessary for isomorphism and unequal hashes prove non-isomorphism. The
+// converse does not hold - 1-WL cannot distinguish some non-isomorphic graphs,
+// notably regular ones - but that is harmless HERE because this is only a
+// pre-filter: a collision costs one wasted vf2 call, which then gives the right
+// answer. The filter can never miss an isomorphism, which is the direction that
+// would corrupt results.
+//
+// The degree-sequence and size fields are kept rather than replaced. They are
+// strictly subsumed by this hash for uniform hypergraphs, but the search also
+// runs on NON-UNIFORM inputs (min_k < max_k), where hyperedge sizes vary and
+// they do real work.
+static std::uint64_t splitmix64(std::uint64_t x) {
+    x += 0x9E3779B97F4A7C15ull;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    return x ^ (x >> 31);
+}
+
+std::uint64_t TwinSearch::colour_refinement_hash(const UndirectedGraph &g) {
+    const std::size_t V = boost::num_vertices(g);
+    if (V == 0) return 0;
+
+    std::vector<std::uint64_t> colour(V), next(V);
+    for (std::size_t v = 0; v < V; v++)
+        colour[v] = splitmix64(static_cast<std::uint64_t>(boost::degree(v, g)) + 1);
+
+    auto distinct = [](std::vector<std::uint64_t> c) {
+        std::sort(c.begin(), c.end());
+        return static_cast<std::size_t>(std::unique(c.begin(), c.end()) - c.begin());
+    };
+    std::size_t prev_classes = distinct(colour);
+
+    std::vector<std::uint64_t> nb;
+    // Refinement cannot keep splitting for more than V rounds, and in practice
+    // stabilises in two or three. Stop as soon as the partition stops refining:
+    // further rounds would change the hash without adding discrimination.
+    for (std::size_t round = 0; round < V; round++) {
+        for (std::size_t v = 0; v < V; v++) {
+            nb.clear();
+            auto [it, end] = boost::adjacent_vertices(v, g);
+            for (; it != end; ++it)
+                nb.push_back(colour[*it]);
+            // Sorted so the result does not depend on adjacency-list order,
+            // which is what makes this an invariant rather than a traversal
+            // artefact.
+            std::sort(nb.begin(), nb.end());
+            std::uint64_t h = colour[v];
+            for (std::uint64_t x : nb)
+                h = splitmix64(h ^ x);
+            next[v] = h;
+        }
+        colour.swap(next);
+        const std::size_t classes = distinct(colour);
+        if (classes == prev_classes)
+            break;
+        prev_classes = classes;
+    }
+
+    std::sort(colour.begin(), colour.end());
+    std::uint64_t h = splitmix64(static_cast<std::uint64_t>(V));
+    for (std::uint64_t x : colour)
+        h = splitmix64(h ^ x);
+    return h;
 }
 
 TwinSearch::GraphFingerprint TwinSearch::compute_fingerprint(const UndirectedGraph &g) {
@@ -54,6 +136,7 @@ TwinSearch::GraphFingerprint TwinSearch::compute_fingerprint(const UndirectedGra
     for (std::size_t v = 0; v < fp.num_vertices; ++v)
         fp.degrees.push_back(boost::degree(v, g));
     std::sort(fp.degrees.begin(), fp.degrees.end());
+    fp.wl = colour_refinement_hash(g);
     return fp;
 }
 

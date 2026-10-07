@@ -151,9 +151,12 @@ class TwinSearch {
         // and its projection remainder to use with the stack.
         struct StackItem;
 
-        // Cheap isomorphism invariant used to avoid calling
+        // Cheap isomorphism invariants used to avoid calling
         // boost::vf2_graph_iso on pairs that cannot possibly be isomorphic.
         struct GraphFingerprint;
+        // 1-WL / colour-refinement hash. See the definition in the .cpp for
+        // why it is sound and why the degree sequence alone is not enough.
+        static std::uint64_t colour_refinement_hash(const UndirectedGraph &g);
         static GraphFingerprint compute_fingerprint(const UndirectedGraph &g);
         static std::vector<GraphFingerprint> compute_fingerprints(const std::vector<UndirectedGraph> &graphs);
         static bool fingerprints_match(const GraphFingerprint &a, const GraphFingerprint &b);
