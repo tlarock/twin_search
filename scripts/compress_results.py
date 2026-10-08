@@ -42,40 +42,108 @@ SAMPLES_RE = re.compile(r"_samples-(\d+)")
 SKIP_SUBSTRINGS = (".partial-", ".lock", ".superseded", ".tmp")
 
 
+EXHAUSTIVE_RE = re.compile(
+    r"^n-(\d+)_m-(\d+)_k-(\d+)_non-uniform_exhaustive_projections\.csv$")
+
+_EXPECTED = None
+
+
+def exhaustive_expected(basename):
+    """-> rows an exhaustive enumeration must have, or None if not tabulated.
+
+    An exhaustive run's row count is a DETERMINISTIC function of (n, m, k) -
+    the number of non-isomorphic projections. That makes it exactly checkable,
+    unlike a sampled cell where only a lower bound is meaningful.
+    """
+    global _EXPECTED
+    if _EXPECTED is None:
+        _EXPECTED = {}
+        table = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "exhaustive_row_counts.tsv")
+        try:
+            with open(table) as fh:
+                for line in fh:
+                    if line.startswith("#") or line.startswith("n\t"):
+                        continue
+                    n, m, k, rows = line.split()
+                    _EXPECTED[(int(n), int(m), int(k))] = int(rows)
+        except OSError:
+            pass
+    mo = EXHAUSTIVE_RE.match(basename)
+    if not mo:
+        return None
+    n, m, k = (int(g) for g in mo.groups())
+    return _EXPECTED.get((n, m, k))
+
+
+def expected_rows(basename):
+    """-> (expected, exact) from the FILENAME alone, or (None, _).
+
+    `exact` says whether the count must match rather than merely be reached:
+    a sampled cell can legitimately hold more rows than its target, an
+    exhaustive enumeration cannot.
+    """
+    mo = SAMPLES_RE.search(basename)
+    if mo:
+        return int(mo.group(1)), False
+    want = exhaustive_expected(basename)
+    return (want, True) if want is not None else (None, True)
+
+
 def classify(path):
-    """-> (ok_to_compress, reason). Reason is printed when ok is False."""
+    """-> (ok_to_compress, reason). Reason is printed when ok is False.
+
+    THE DATA OUTRANKS THE METADATA. A row count read off the file is evidence;
+    a .meta is a claim written by a signal handler under time pressure, and it
+    can be - has been - wrong about a file that is perfectly good.
+
+    The case that taught this: an exhaustive cell whose SIGTERM trap stamped
+    `status timeout-empty, rows 0` at 07:55 while the child was still running.
+    The child finished at 13:15, so the file's mtime was five hours LATER than
+    the metadata declaring it empty. The cell was complete and byte-identical
+    to the published dataset, and an earlier version of this function refused
+    to compress it on the meta's say-so - and was very nearly taken as grounds
+    to DELETE 404 MB of correct results.
+    """
     base = os.path.basename(path)
 
+    # Name-based refusals come first. These are about what the file IS, not
+    # what it contains: a partial is an input to its own resume whether or not
+    # it happens to hold a full complement of rows.
     for bad in SKIP_SUBSTRINGS:
         if bad in base:
             return False, f"transient or censored ({bad})"
     if os.sep + ".resume-" in path:
         return False, "inside a resume staging directory"
 
-    meta = path + ".meta"
-    if os.path.exists(meta):
-        with open(meta) as fh:
-            status = dict(
+    meta_status = None
+    if os.path.exists(path + ".meta"):
+        with open(path + ".meta") as fh:
+            meta_status = dict(
                 line.rstrip("\n").split("\t", 1)
                 for line in fh if "\t" in line
             ).get("status", "?")
-        if status != "ok":
-            return False, f"meta says status={status}"
 
-    m = SAMPLES_RE.search(base)
-    if m:
-        want = int(m.group(1))
+    want, exact = expected_rows(base)
+    if want is not None:
         have = count_rows(path)
-        if have < want:
+        if exact and have != want:
+            return False, f"{have} rows, expected exactly {want}"
+        if not exact and have < want:
             return False, f"short: {have} rows < {want} the name claims"
+        if meta_status not in (None, "ok"):
+            # Deliberately NOT a refusal. The file passed the only check that
+            # looks at content; say the meta disagrees and move on.
+            print(f"  note: {show(path)} passes its row check ({have}) but its "
+                  f"meta says status={meta_status} - STALE META, compressing anyway")
         return True, ""
 
-    # Exhaustive enumerations carry no row target - completeness is the exit
-    # code, which only the .meta records. With no meta there is nothing here
-    # that can distinguish a finished file from an interrupted one.
-    if os.path.exists(meta):
+    # No check derivable from the name. Only now does the meta get a vote.
+    if meta_status == "ok":
         return True, ""
-    return False, "no samples-N in the name and no meta: completeness unknown"
+    if meta_status is not None:
+        return False, f"no row check available and meta says status={meta_status}"
+    return False, "no expected row count and no meta: completeness unknown"
 
 
 def show(path):
@@ -140,10 +208,11 @@ def verify(path):
     This is the check worth running before the dataset becomes the only copy.
     A .zst that decodes cleanly can still be the WRONG cell - a half-finished
     compression renamed by hand, a file copied over another - and the row
-    count against samples-N catches that where a checksum of the archive
-    against itself cannot.
+    count catches that where a checksum of the archive against itself cannot.
+    Exhaustive cells are checked for EXACT equality against
+    exhaustive_row_counts.tsv; sampled cells only for a lower bound.
     """
-    m = SAMPLES_RE.search(os.path.basename(path))
+    want, exact = expected_rows(os.path.basename(path)[:-len(".zst")])
     try:
         with subprocess.Popen(["zstd", "-dcq", path],
                               stdout=subprocess.PIPE) as proc:
@@ -153,8 +222,12 @@ def verify(path):
                 return rows, "archive did not decompress cleanly"
     except Exception as exc:                      # noqa: BLE001
         return 0, f"{type(exc).__name__}: {exc}"
-    if m and rows < int(m.group(1)):
-        return rows, f"{rows} rows < {m.group(1)} the name claims"
+    if want is None:
+        return rows, None
+    if exact and rows != want:
+        return rows, f"{rows} rows, expected exactly {want}"
+    if not exact and rows < want:
+        return rows, f"{rows} rows < {want} the name claims"
     return rows, None
 
 
