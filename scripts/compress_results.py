@@ -119,6 +119,68 @@ def compress(path, level, keep):
         return before, 0, f"{type(exc).__name__}: {exc}"
 
 
+def decompress(path):
+    """The inverse of compress(), same verify-before-delete discipline."""
+    plain = path[:-len(".zst")]
+    tmp = plain + ".tmp"
+    try:
+        subprocess.run(["zstd", "-dq", "-o", tmp, "-f", path], check=True)
+        os.replace(tmp, plain)
+        os.remove(path)
+        return os.path.getsize(plain), None
+    except Exception as exc:                      # noqa: BLE001
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return 0, f"{type(exc).__name__}: {exc}"
+
+
+def verify(path):
+    """Decompress a cell and check it still holds the rows its name claims.
+
+    This is the check worth running before the dataset becomes the only copy.
+    A .zst that decodes cleanly can still be the WRONG cell - a half-finished
+    compression renamed by hand, a file copied over another - and the row
+    count against samples-N catches that where a checksum of the archive
+    against itself cannot.
+    """
+    m = SAMPLES_RE.search(os.path.basename(path))
+    try:
+        with subprocess.Popen(["zstd", "-dcq", path],
+                              stdout=subprocess.PIPE) as proc:
+            rows = sum(buf.count(b"\n")
+                       for buf in iter(lambda: proc.stdout.read(1 << 20), b""))
+            if proc.wait() != 0:
+                return rows, "archive did not decompress cleanly"
+    except Exception as exc:                      # noqa: BLE001
+        return 0, f"{type(exc).__name__}: {exc}"
+    if m and rows < int(m.group(1)):
+        return rows, f"{rows} rows < {m.group(1)} the name claims"
+    return rows, None
+
+
+def run_verify(dirs, jobs):
+    todo = [os.path.join(root, name)
+            for d in dirs for root, _, files in os.walk(d)
+            for name in sorted(files) if name.endswith(".csv.zst")]
+    if not todo:
+        print("no compressed cells found")
+        return 0
+    print(f"verifying {len(todo)} compressed cell(s) on {jobs} job(s)")
+    bad, total_rows = [], 0
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for path, (rows, err) in zip(todo, pool.map(verify, todo)):
+            total_rows += rows
+            if err:
+                bad.append((path, err))
+                print(f"  BAD  {show(path)}: {err}", file=sys.stderr)
+    print(f"{len(todo) - len(bad)}/{len(todo)} cells intact, "
+          f"{total_rows:,} rows total")
+    if bad:
+        print(f"{len(bad)} FAILED verification", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -131,7 +193,32 @@ def main():
     ap.add_argument("-n", "--dry-run", action="store_true")
     ap.add_argument("--keep", action="store_true",
                     help="leave the plain file in place as well")
+    ap.add_argument("--verify", action="store_true",
+                    help="decompress every .csv.zst and check its row count "
+                         "against the samples-N in its name; change nothing")
+    ap.add_argument("--decompress", action="store_true",
+                    help="the inverse: .csv.zst back to .csv")
     args = ap.parse_args()
+
+    if args.verify:
+        return run_verify(args.dirs, args.jobs)
+
+    if args.decompress:
+        todo = [os.path.join(root, name)
+                for d in args.dirs for root, _, files in os.walk(d)
+                for name in sorted(files) if name.endswith(".csv.zst")]
+        print(f"{len(todo)} cell(s) to decompress")
+        if args.dry_run:
+            return 0
+        failures = 0
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            for path, (size, err) in zip(todo, pool.map(decompress, todo)):
+                if err:
+                    failures += 1
+                    print(f"  FAILED {show(path)}: {err}", file=sys.stderr)
+                else:
+                    print(f"  {size / 2**20:8.1f} MiB  {show(path)[:-4]}")
+        return 1 if failures else 0
 
     todo, skipped = [], []
     for root_dir in args.dirs:
