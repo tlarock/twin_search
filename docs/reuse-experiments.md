@@ -436,3 +436,78 @@ shows false differences - this cost an hour twice.
   default. That was presumably measured on typical samples. Stragglers are
   where variable ordering normally pays most in a CSP, and they were almost
   certainly not the test set.
+
+---
+
+## 8. Re-evaluation after the pairwise rewrite (2026-10-08)
+
+Section 2 closed the cross-m DP because traversal was only 17.1% of runtime
+while the bipartite + isomorphism phase was 72.7%, and the decomposition
+removes traversal work only. **Section 7 removed that 72.7%.** Anyone reading
+section 2 now would reasonably conclude its verdict had expired. It has not,
+but the reason has changed completely, so it is recorded here rather than left
+to be re-derived.
+
+### The premise really did flip
+
+With the isomorphism phase at ~0, the old split renormalises to roughly
+
+    traversal       17.1 / 27.3 = 62.6%
+    line graphs + mates                37.4%
+
+so traversal is now the dominant term - exactly what the DP attacks. Applying
+the measured "forbidding one clique removes 43% of traversal" gives
+
+    0.626 x 0.43 = 26.9% of runtime removed  ->  ceiling ~1.37x
+
+**This is arithmetic on the OLD decomposition, not a new measurement.**
+`TwinSearch::ms_traversal`, `ms_mates` and `ms_iso` exist as members
+(`twin_search.hpp`) and are populated, but the driver does not emit them, so
+nobody has measured the post-rewrite split. Emitting them is the cheap way to
+replace this estimate with a number.
+
+### The scheduling argument, and why the obvious version of it is wrong
+
+My first objection after the rewrite was that the DP forces cell m before cell
+m+1, turning independent submissions into a dependency chain, each link paying
+its own queue wait - which now dominates, since a k=3 n=9 cell is ~221-405 s of
+compute against hours of queue.
+
+**Tim's correction: that does not follow.** The chain needs no SLURM
+dependencies at all. Run the whole chain inside ONE allocation - compute m,
+then m+1, then m+2 in the same job - and you pay one queue wait, not seven.
+Seven cells at ~5 minutes fits a 24h wall with enormous margin. If the sizing
+is wrong the job times out or OOMs, and `resume_cell.sh` already recovers from
+exactly that. The only real scheduling cost is that a chain long enough to
+exceed 24h moves into a different QOS with a longer queue.
+
+### What actually settles it
+
+**Batching cells into one allocation is a scheduling win available WITHOUT the
+DP.** Nothing stops a single job computing m=39..45 back to back today; that
+captures the one-queue-wait benefit on its own. So the DP cannot claim any
+scheduling credit - it is left earning only its ~1.37x.
+
+Against that: implementing cross-m seeding means wiring the forbidden-clique
+mechanism (prototyped in `twin_dp_probe`) and the twins-so-far entry point
+(`parallel_search_from`, which exists but is not wired for cross-m reuse) into
+the production driver. That is real work, for ~60-110 seconds per cell, on a
+chain that breaks at any gap in m and that makes every cell's output depend on
+its predecessor's - so one corrupted cell propagates.
+
+**Verdict: still closed, on cost-benefit rather than on the 72.7% figure.**
+
+### What would reopen it
+
+Both of these, together:
+
+1. **Larger n** (n=10, 11), where twin counts explode and traversal dominates
+   outright rather than by renormalisation.
+2. **Cells long enough that per-cell compute dwarfs the engineering**, which is
+   the same condition - at 5 minutes a cell, a 1.37x is not worth wiring.
+
+The structural result in section 1 is unaffected by any of this. It is an exact
+bijection verified on 2,415 samples and 11.7M twins, and it is a statement about
+how twin sets grow, not an optimisation. `analysis/python/nested_twin_reuse.py`
+re-checks it from finished output with zero compute and is worth re-running over
+the completed dataset.
