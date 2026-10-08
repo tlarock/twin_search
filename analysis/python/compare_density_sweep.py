@@ -22,12 +22,19 @@ import os, re, sys
 import numpy as np
 from scipy import stats
 
-PAT = re.compile(r'^n-(\d+)_m-(\d+)_k-(\d+)_samples-(\d+)\.csv$')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from distance_stats import open_text
+
+# The trailing (\.zst|\.gz)? is not decoration. Finished cells are stored
+# compressed (scripts/compress_results.py), and a pattern anchored on ".csv$"
+# matches none of them - so this would have reported ZERO common cells and
+# exited cleanly, which reads exactly like "the two runs share nothing".
+PAT = re.compile(r'^n-(\d+)_m-(\d+)_k-(\d+)_samples-(\d+)\.csv(\.zst|\.gz)?$')
 
 
 def parse(path):
     mw, tw, tf, tm = [], [], [], []
-    for line in open(path):
+    for line in open_text(path):
         h, t = line.find('/'), line.rfind('/') + 1
         f = line[:h].split(',')
         mw.append(int(f[3])); tm.append(int(f[6]))
@@ -60,7 +67,7 @@ def index(d):
     for f in sorted(os.listdir(d)):
         mo = PAT.match(f)
         if mo:
-            n, m, k, s = map(int, mo.groups())
+            n, m, k, s = map(int, mo.groups()[:4])
             if (k, n, m) not in out or s > out[(k, n, m)][1]:
                 out[(k, n, m)] = (os.path.join(d, f), s)
     return out

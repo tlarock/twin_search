@@ -2,6 +2,8 @@ import pickle
 import gzip
 import io
 import os
+import shutil
+import subprocess
 import numpy as np
 
 
@@ -33,29 +35,77 @@ def data_exists(filepath):
     return resolve_path(filepath) is not None
 
 
-def _open_zstd(path):
-    """Open a .zst file as text.
+class _ProcStream(io.RawIOBase):
+    """A read-only byte stream fed by a decompressor subprocess.
 
-    zstd is stdlib from Python 3.14 (`compression.zstd`). The notebook venvs
-    here are 3.10, which needs the `zstandard` package - hence the fallback,
-    and the explicit error rather than a bare ImportError if neither is there.
+    close() reaps the child and RAISES if it failed. That matters more than it
+    looks: a truncated or corrupt .zst would otherwise decode as a SHORT file
+    and read back as a cell with fewer rows than it has - the same silent
+    censoring that `read_sampled_cell` exists to prevent, except invisible
+    because the row count on disk still looks right.
     """
+
+    def __init__(self, argv, path):
+        self._proc = subprocess.Popen(argv, stdout=subprocess.PIPE)
+        self._path = path
+
+    def readable(self):
+        return True
+
+    def readinto(self, buf):
+        return self._proc.stdout.readinto(buf)
+
+    def close(self):
+        if self._proc is None:
+            return super().close()
+        proc, self._proc = self._proc, None
+        try:
+            proc.stdout.close()
+        finally:
+            rc = proc.wait()
+        super().close()
+        # -13 is SIGPIPE: the caller stopped reading early (a header peek, a
+        # `break` out of the loop), which is not an error.
+        if rc not in (0, -13):
+            raise OSError(f"zstd -dc {self._path} exited {rc}")
+
+
+def _open_zstd(path, binary=False):
+    """Open a .zst file, as text by default or as bytes with binary=True.
+
+    Three tiers, because this has to work in every environment the data is
+    read from and no two of them have the same thing installed:
+
+      1. `compression.zstd`, stdlib from Python 3.14.
+      2. the `zstandard` package - the conda env the notebooks run in.
+      3. the `zstd` CLI, via a pipe.
+
+    Tier 3 is the one that makes compressing the results safe to do at all: it
+    needs no Python package anywhere, so the repo's own 3.10 .venv, a bare
+    cluster Python and a notebook kernel all read the same files. Without it,
+    compressing the dataset would have silently broken every script run under
+    an interpreter that happened to lack `zstandard`.
+    """
+    mode = "rb" if binary else "rt"
     try:
         from compression import zstd
-        return zstd.open(path, "rt")
+        return zstd.open(path, mode)
     except ImportError:
         pass
     try:
         import zstandard
     except ImportError:
+        pass
+    else:
+        reader = zstandard.ZstdDecompressor().stream_reader(open(path, "rb"))
+        return reader if binary else io.TextIOWrapper(reader, encoding="utf-8")
+    if shutil.which("zstd") is None:
         raise ImportError(
-            f"reading {path} needs zstd support: either Python >= 3.14 "
-            f"(stdlib compression.zstd) or `pip install zstandard`"
-        ) from None
-    import io
-    fh = open(path, "rb")
-    reader = zstandard.ZstdDecompressor().stream_reader(fh)
-    return io.TextIOWrapper(reader, encoding="utf-8")
+            f"reading {path} needs zstd support: Python >= 3.14 (stdlib "
+            f"compression.zstd), `pip install zstandard`, or the zstd CLI"
+        )
+    stream = io.BufferedReader(_ProcStream(["zstd", "-dcq", path], path))
+    return stream if binary else io.TextIOWrapper(stream, encoding="utf-8")
 
 
 # The stats tables get_stat_dist produces. min/max/entropy are created and
@@ -145,7 +195,6 @@ def write_stats_file(path, stats, level=19):
     blob = buf.getvalue().encode()
 
     if path.endswith(".zst"):
-        import subprocess
         blob = subprocess.run(["zstd", f"-{level}", "-q", "-c"],
                               input=blob, capture_output=True, check=True).stdout
         with open(path, "wb") as fout:
@@ -164,19 +213,7 @@ def stats_path(results_dir, n, k, m_lo, m_hi, dist, match_type):
 def open_binary(path):
     """Open a possibly-zstd-compressed file for reading as BYTES."""
     if path.endswith(".zst"):
-        try:
-            from compression import zstd
-            return zstd.open(path, "rb")
-        except ImportError:
-            pass
-        try:
-            import zstandard
-        except ImportError:
-            raise ImportError(
-                f"reading {path} needs zstd support: either Python >= 3.14 "
-                f"(stdlib compression.zstd) or `pip install zstandard`"
-            ) from None
-        return zstandard.ZstdDecompressor().stream_reader(open(path, "rb"))
+        return _open_zstd(path, binary=True)
     if path.endswith(".gz"):
         return gzip.open(path, "rb")
     return open(path, "rb")
