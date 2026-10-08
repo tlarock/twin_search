@@ -506,3 +506,34 @@ TEST(TwinSearchTest, FrontierFromTheWrongProjectionIsRefused) {
     if (mappable)
         EXPECT_FALSE(sb.parallel_search_from(mapped, {}, true));
 }
+
+// The line graph joins two hyperedges once per node they share, so its edge
+// count is sum over UNORDERED pairs of |h_r intersect h_c|. The expectation is
+// computed from the twin itself rather than hardcoded, so the test cannot drift
+// with the fixture and states the invariant rather than a magic number.
+TEST(TwinSearchTest, LineGraphHasOneEdgePerSharedNodePerPair) {
+    Hypergraph h(resume_fixture());
+    ProjectedGraph proj(h);
+    TwinSearch ts(proj, 3, 3, true, true, false, false);
+    ASSERT_TRUE(ts.feasible);
+    ts.parallel_search(true);
+    ASSERT_GT(ts.twins.size(), 0u);
+
+    for (std::size_t t = 0; t < std::min<std::size_t>(5, ts.twins.size()); ++t) {
+        const std::vector<std::vector<int> > he = ts.inflate_cnodes(ts.twins[t]);
+        std::size_t expected = 0;
+        for (std::size_t r = 0; r < he.size(); ++r) {
+            for (std::size_t c = r + 1; c < he.size(); ++c) {
+                std::vector<int> a = he[r], b = he[c], inter;
+                std::sort(a.begin(), a.end());
+                std::sort(b.begin(), b.end());
+                std::set_intersection(a.begin(), a.end(), b.begin(), b.end(),
+                                      std::back_inserter(inter));
+                expected += inter.size();
+            }
+        }
+        const UndirectedGraph lg = ts.compute_linegraph(ts.twins[t]);
+        EXPECT_EQ(boost::num_edges(lg), expected)
+            << "twin " << t << ": line graph edge count";
+    }
+}

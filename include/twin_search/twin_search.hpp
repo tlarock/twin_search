@@ -163,6 +163,9 @@ class TwinSearch {
         static long double compute_width_product(ProjectedGraph &proj, FactorGraph &fact);
         static double compute_log_width_product(ProjectedGraph &proj, FactorGraph &fact);
         std::vector<std::vector<int> > inflate_cnodes(const std::vector<int> &cnode_ids);
+        // Public so a test can assert the edge count directly. Pure function of
+        // the hypergraph given proj/fact.
+        UndirectedGraph compute_linegraph(const std::vector<int> &hypergraph);
         // NOTE: This does not need to be public, but I wanted
         // to test it explicitly
         static bool equivalent_lg(std::vector<ublas::matrix<int> > &line_graphs, const int i, const int j);
@@ -205,7 +208,6 @@ class TwinSearch {
         // the small incidence matrix, which is far cheaper than the graph it
         // is used to make.
         UndirectedGraph compute_bipartite(const std::vector<int> &hypergraph);
-        UndirectedGraph compute_linegraph(const std::vector<int> &hypergraph);
         bool is_isomorphic(const std::vector<UndirectedGraph> &bipartites, const std::vector<GraphFingerprint> &fingerprints, const int cand_idx);
         void add_to_stack(const StackItem &curr, const std::vector<int> &comb, std::vector<StackItem> &stack);
         std::vector<int> get_filtered_neighbors(const StackItem &s, int enode_id);

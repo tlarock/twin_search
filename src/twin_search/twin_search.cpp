@@ -661,10 +661,13 @@ UndirectedGraph TwinSearch::compute_linegraph(const std::vector<int> &hypergraph
 
     UndirectedGraph line_graph;
     ublas::matrix<int> lg_mat = ublas::prod(incidence_matrix, ublas::trans(incidence_matrix));
+    // lg_mat is A*A^T and so symmetric: lg_mat(r,c) == lg_mat(c,r). Walking all
+    // ordered pairs added every edge TWICE, giving a line graph with double the
+    // edges it should have. That did not change which twins are mates - the
+    // doubling is uniform, so it preserves isomorphism classes - but it doubled
+    // the memory and the work in what is now a quarter of total runtime.
     for (std::size_t r = 0; r < lg_mat.size1(); ++r) {
-        for (std::size_t c = 0; c < lg_mat.size2(); ++c) {
-            if (r == c)
-                continue;
+        for (std::size_t c = r + 1; c < lg_mat.size2(); ++c) {
             if (lg_mat(r, c) > 0) {
                 for (int v = 0; v < lg_mat(r,c); ++v)
                     boost::add_edge(r, c, line_graph);
