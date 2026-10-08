@@ -40,6 +40,7 @@ struct MyArgs : public argparse::Args {
     bool &no_max_k = flag("no-max-k", "Set the maximum k to the maximum integer size. --max-k ignored if given.");
     std::string &filepath = kwarg("output-path", "Output filepath. Default is results/increasing_density/").set_default("results/increasing_density/");
     int &max_threads = kwarg("max-threads, tbb-max-allowed-parallelism", "Value passed to TBB to limit number of worker threads. If <= 0, ignored.").set_default(0);
+    bool &split_output = flag("split-output", "Write the twin lists to a separate <output>.twins file, keyed by sample index, instead of as the last section of each row. The scalars file then holds only per-sample summary data - about 0.004% of the bytes - so analyses that never touch twins read megabytes instead of tens of gigabytes. Off by default: the resume harness and every existing reader expect the combined format.");
     bool &sequential_samples = flag("sequential-samples", "If given, do not parallelize over samples. NOTE: parallelization of TwinSearch.*_search controlled by --sequential-twins.");
     bool &sequential_twins = flag("sequential-twins", "If given, run TwinSearch.search rather than TwinSearch.parallel_search. NOTE: parallelization of samples still controlled by --sequential-samples and --max-threads.");
     bool &append = flag("append", "If given, append to the appropriate file if it already exists. Useful for backfilling failed samplings.");
@@ -113,7 +114,7 @@ static std::mt19937 sample_generator(const Params &p) {
     return std::mt19937(seq);
 }
 
-bool one_sample_write(Params &p, std::ofstream &outfile) {
+bool one_sample_write(Params &p, std::ofstream &outfile, std::ofstream *twinsfile = nullptr) {
     // A map from a size distribution represented as a vector with entries
     // corresponding to min_k,...,max_k pointing to a 2-entry vector consisting
     // of the number of twins and filtered_twins
@@ -241,7 +242,12 @@ bool one_sample_write(Params &p, std::ofstream &outfile) {
                     << "," << num_edges << "," << num_cliques << "," << num_mate_pairs
                     << "," << twins.ms_traversal
                     << "," << twins.ms_mates
-                    << "," << twins.ms_iso << "/";
+                    << "," << twins.ms_iso
+            // The sample index, appended rather than placed first so that every
+            // existing positional reader keeps working. Rows have never carried
+            // it, which is the entire reason resume_missing.py has to recover
+            // indices by matching projections from a --dry-run.
+                    << "," << p.i << "/";
             for (const auto& [size_dist, stats_vect] : twins_counts) {
                 // Write the size_distribution/
                 std::string pairs_str = "";
@@ -254,7 +260,18 @@ bool one_sample_write(Params &p, std::ofstream &outfile) {
                 outfile << pairs_str << "/";
                 outfile << std::to_string(stats_vect[0]) << "," << std::to_string(stats_vect[1]) << "/";
             }
-            write_all_twins(twins, outfile); 
+            if (twinsfile != nullptr && twinsfile->is_open()) {
+                // Keyed by sample index, so the two files join on a real key
+                // rather than on line order. That also makes a crash between
+                // the two writes detectable: the unmatched row is simply
+                // dropped, instead of silently pairing the wrong twins to the
+                // wrong scalars.
+                *twinsfile << p.i << "/";
+                write_all_twins(twins, *twinsfile);
+                *twinsfile << std::endl;
+            } else {
+                write_all_twins(twins, outfile);
+            }
             outfile << std::endl;
 
         } else {
@@ -462,6 +479,7 @@ int main(int argc, char *argv[]) {
     const bool sequential = args.sequential_twins;
     const bool sequential_samples = args.sequential_samples;
     const bool append = args.append;
+    const bool split_output = args.split_output;
     const unsigned int seed = args.seed;
     const int start_sample = args.start_sample;
     // Note: not const because modified if auto_width_limit is true
@@ -648,6 +666,20 @@ int main(int argc, char *argv[]) {
         outfile.open(filename, std::ios::out | std::ios::app);
     }
 
+    // Opened with the same truncate/append mode as the scalars file, so the two
+    // stay in step across a resume.
+    std::ofstream twinsfile;
+    if (split_output) {
+        const std::string twins_name = filename + ".twins";
+        twinsfile.open(twins_name, append ? (std::ios::out | std::ios::app)
+                                          : (std::ios::out | std::ios::trunc));
+        if (!twinsfile.is_open()) {
+            std::cout << "Couldn't open file: " + twins_name << ". Exiting." << std::endl;
+            return 1;
+        }
+    }
+    std::ofstream *twinsptr = split_output ? &twinsfile : nullptr;
+
     if (!outfile.is_open()) {
         std::cout << "Couldn't open file: " + filename << ". Exiting." << std::endl;
         return 0;
@@ -664,7 +696,7 @@ int main(int argc, char *argv[]) {
         tbb::parallel_for_each(loop_args.begin(), loop_args.end(),
                 [&](Params p, tbb::feeder<Params>& feeder)
         {
-            bool success = one_sample_write(p, outfile);
+            bool success = one_sample_write(p, outfile, twinsptr);
             if (!success) {
                 {
                     tbb::spin_mutex::scoped_lock lock(feeder_mutex);
@@ -685,7 +717,7 @@ int main(int argc, char *argv[]) {
         bool success;
         while (num_successes < num_samples) {
             for(std::size_t i = 0; i < loop_args.size(); i++) {
-                success = one_sample_write(loop_args[i], outfile);
+                success = one_sample_write(loop_args[i], outfile, twinsptr);
                 if (success) {
                     num_successes += 1;
                     if (num_successes >= num_samples)
