@@ -12,6 +12,22 @@
 
 #include "argparse/argparse.hpp"
 
+// Which standard library built this binary. std::uniform_int_distribution is
+// implementation-defined, so the sampled hypergraphs are a function of
+// (seed, index, attempt, STANDARD LIBRARY): the same seed on libc++ and
+// libstdc++ produces different data. Rows now carry a sample index, which is a
+// claim that can only be checked if the toolchain is known, so record it.
+static std::string stdlib_id() {
+#if defined(_GLIBCXX_RELEASE)
+    return "libstdc++ release=" + std::to_string(_GLIBCXX_RELEASE)
+         + " __GLIBCXX__=" + std::to_string(__GLIBCXX__);
+#elif defined(_LIBCPP_VERSION)
+    return "libc++ _LIBCPP_VERSION=" + std::to_string(_LIBCPP_VERSION);
+#else
+    return "unknown";
+#endif
+}
+
 #include "hypergraph.hpp"
 #include "factor_graph.hpp"
 #include "projected_graph.hpp"
@@ -243,11 +259,20 @@ bool one_sample_write(Params &p, std::ofstream &outfile, std::ofstream *twinsfil
                     << "," << twins.ms_traversal
                     << "," << twins.ms_mates
                     << "," << twins.ms_iso
-            // The sample index, appended rather than placed first so that every
-            // existing positional reader keeps working. Rows have never carried
-            // it, which is the entire reason resume_missing.py has to recover
-            // indices by matching projections from a --dry-run.
-                    << "," << p.i << "/";
+            // The sample index AND attempt, appended rather than placed first
+            // so that every existing positional reader keeps working. Rows have
+            // never carried the index, which is the entire reason
+            // resume_missing.py has to recover it by matching projections from
+            // a --dry-run.
+            //
+            // attempt is not redundant. A rejected sample is re-fed with
+            // attempt+1, which deliberately changes the stream, so the drawn
+            // hypergraph is a function of (seed, i, attempt) - and of the
+            // standard library, which is why main() prints STDLIB at startup.
+            // It is 0 for every row of this campaign because nothing was ever
+            // rejected, but --width-limit-exp exists precisely to cause
+            // rejections, and there i alone would not identify the sample.
+                    << "," << p.i << "," << p.attempt << "/";
             for (const auto& [size_dist, stats_vect] : twins_counts) {
                 // Write the size_distribution/
                 std::string pairs_str = "";
@@ -656,6 +681,7 @@ int main(int argc, char *argv[]) {
     else
         std::cout << "Seed: " << seed << " (reproducible; sampled hypergraphs depend only on seed and sample index)" << std::endl;
 
+    std::cout << "STDLIB " << stdlib_id() << std::endl;
     std::cout << "Constructed input arguments." << std::endl;
 
     // touch/empty the output file
