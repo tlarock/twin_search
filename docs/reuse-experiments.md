@@ -460,11 +460,22 @@ the measured "forbidding one clique removes 43% of traversal" gives
 
     0.626 x 0.43 = 26.9% of runtime removed  ->  ceiling ~1.37x
 
-**This is arithmetic on the OLD decomposition, not a new measurement.**
-`TwinSearch::ms_traversal`, `ms_mates` and `ms_iso` exist as members
-(`twin_search.hpp`) and are populated, but the driver does not emit them, so
-nobody has measured the post-rewrite split. Emitting them is the cheap way to
-replace this estimate with a number.
+**MEASURED 2026-10-08** (container, n=9 m=32 k=3, 100 samples, driver now
+emits the three timings). Taken from a `--sequential-samples` run so the
+timings carry no contention:
+
+    traversal  72.5%      mates  24.6%      iso  2.9%
+
+so the ceiling is `0.725 x 0.43` = 31% removed, i.e. **~1.45x** - a little
+above the 1.37x estimated above, and still nowhere near justifying the work.
+The same run under parallel samples reads traversal 62.4% / mates 34.7%,
+because allocator contention inflates the line-graph phase more than it
+inflates traversal; use the uncontended figures.
+
+Two things worth noting in passing. The isomorphism phase is **2.9%**, down
+from 72.7% - section 7 did what it claimed. And `mates` is now a quarter of
+runtime and is almost entirely line-graph CONSTRUCTION, not comparison, which
+makes it the obvious next target rather than traversal.
 
 ### The scheduling argument, and why the obvious version of it is wrong
 
