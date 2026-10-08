@@ -228,7 +228,20 @@ bool one_sample_write(Params &p, std::ofstream &outfile) {
         tbb::spin_mutex::scoped_lock lock(WriteMutex);
         // Write to output file
         if (outfile.is_open()) {
-            outfile << p.n << "," << p.m << "," << runtime << "," << max_log_width << "," << num_edges << "," << num_cliques << "," << num_mate_pairs << "/";
+            // Scalars, then the phase split. `runtime` spans the WHOLE search
+            // INCLUDING the two pairwise phases, so search-only time is
+            // runtime - ms_mates - ms_iso. Emitting the components rather than
+            // a pre-subtracted figure keeps the inclusive number recoverable.
+            //
+            // -1 means a phase was not timed: TwinSearch::search(), the
+            // --sequential-twins path, does the pairwise work inline in
+            // process_item rather than in run_pairwise_phases, so it leaves
+            // these unset.
+            outfile << p.n << "," << p.m << "," << runtime << "," << max_log_width
+                    << "," << num_edges << "," << num_cliques << "," << num_mate_pairs
+                    << "," << twins.ms_traversal
+                    << "," << twins.ms_mates
+                    << "," << twins.ms_iso << "/";
             for (const auto& [size_dist, stats_vect] : twins_counts) {
                 // Write the size_distribution/
                 std::string pairs_str = "";
