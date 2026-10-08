@@ -18,6 +18,7 @@ cmake --build build -j 6
 | `sample_heatmap.sh` | `count_twins_random` | Figure 7, heatmap panel |
 | `sample_density.sh` | `count_twins_random` | Figure 7 line panel, Figure A.10 |
 | `common.sh` | - | shared helpers; source it, do not run it |
+| `compress_results.py` | - | storage: see "Storage" below |
 
 Each script takes `--help`-free positional arguments documented in its header
 comment, and is configured by environment variables.
@@ -49,6 +50,38 @@ the cell as `interrupted`.
 records the git commit, whether the tree was dirty, the host, thread count and
 seed, then one row per cell giving status, wall seconds, peak RSS, output file
 and the exact command. This is the provenance for anything generated here.
+
+## Storage
+
+Finished cells are stored zstd-compressed. A sampled cell is a few thousand
+near-identical integer tuples, which `zstd -19` takes down **~38x** - 29 GB of
+Figure 7 data becomes under a gigabyte. Decompression runs at ~2 GB/s, so this
+costs nothing to read; it is not a space/time trade.
+
+```sh
+python3 scripts/compress_results.py -j 8 results/      # compress, verified
+python3 scripts/compress_results.py --verify results/  # check, change nothing
+python3 scripts/compress_results.py --decompress results/
+```
+
+**Nothing needs to change to read the output.** `distance_stats.resolve_path`
+answers a request for `<cell>.csv` with `<cell>.csv.zst` when that is what
+exists, so the notebooks keep naming the plain file. `-19` is also what the
+published reproducibility dataset used; `-22 --ultra` measures slightly worse
+and three times slower, and `--long` changes nothing.
+
+Two properties worth knowing before relying on it:
+
+- The original is deleted only after the archive has been decompressed again
+  and compared **byte for byte** with it. `zstd --rm` trusts its own exit code.
+- Partial cells are never compressed, and neither is anything a resume is
+  working on. Compression happens on finalise, so the append-and-rename path
+  never meets a `.zst`.
+
+If you write a tool that looks for `*.csv`, make it accept `*.csv.zst` too.
+Every failure this caused during the migration was SILENT: a pattern anchored
+on `.csv$` finds nothing and reports "no cells", which reads exactly like a
+legitimately empty result.
 
 ## Cost
 
