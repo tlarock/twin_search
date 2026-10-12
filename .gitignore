@@ -25,3 +25,12 @@ CMakeUserPresets.json
 # Cluster run-harness scripts. Machine-specific job plumbing for one SLURM
 # site, not part of the reproduction pipeline - that lives in scripts/.
 slurm-scripts/
+
+# Laptop-side rsync harness for the same SLURM site. Same reasoning as
+# slurm-scripts/: it carries cluster paths and is useful on one machine.
+sync-della.sh
+
+# Generated figures. Every one is written by a notebook in analysis/notebooks/
+# from the data in the deposit, so they are reproducible output, not source -
+# same reasoning as results/.
+analysis/plots/

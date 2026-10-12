@@ -297,24 +297,17 @@ def parse_hypergraphs_string(hypergraphs_str, xgi_hypergraphs=False):
 
     return hypergraphs
 
-def read_data(filepath, old_file_format=False, xgi_hypergraphs=True):
+def read_data(filepath, xgi_hypergraphs=True):
     """Read an exhaustive-search or sampled CSV from a path.
 
     .zst and .gz are handled transparently, so the same call works against the
     reproducibility dataset and against a loose directory of plain CSVs.
-
-    `old_file_format` selects the pre-TwinSearch row layout used by the
-    increasing_density samples-500 files that Figure 7's line panel and Figure
-    A.10 read. It lived only as a duplicated cell inside those two notebooks;
-    it is here so the dataset ships with one reader rather than three.
     """
     with open_text(filepath) as fin:
-        if old_file_format:
-            return read_data_old_lines(fin)
         return read_data_lines(fin, xgi_hypergraphs=xgi_hypergraphs)
 
 
-def read_sampled_cell(filepath, expected_samples, old_file_format=False,
+def read_sampled_cell(filepath, expected_samples,
                       xgi_hypergraphs=False, min_samples=None):
     """Read one sampled (n, m, k) cell, refusing to return a censored one.
 
@@ -351,8 +344,7 @@ def read_sampled_cell(filepath, expected_samples, old_file_format=False,
             "expected": expected_samples, "status": "missing"}
     if not data_exists(filepath):
         return None, info
-    data = read_data(filepath, old_file_format=old_file_format,
-                     xgi_hypergraphs=xgi_hypergraphs)
+    data = read_data(filepath, xgi_hypergraphs=xgi_hypergraphs)
     info["rows"] = len(data["n"])
     if info["rows"] < min_samples:
         info["status"] = "short"
@@ -394,46 +386,6 @@ def _empty_exhaustive_data():
         "dist_results_dict": [],
         "hypergraphs": []
     }
-
-
-def read_data_old_lines(lines):
-    """Parse the old sampled-results layout: seven ints, then the hypergraph.
-
-    The layout is fixed by the writer this data came from - count_mates_random
-    before commit 6cd48c5 ("Standardized output format"), at
-    src/gram_mates/count_mates_random.cpp:125:
-
-        n, m, num_unfiltered, num_filtered, runtime, max_log_width,
-        num_cliques, <hyperedges separated by "|">
-
-    An earlier version of this function unpacked only six fields and called the
-    sixth `num_cliques`, so it labelled max_log_width as num_cliques, dropped
-    the real num_cliques, and reported max_width as absent when these rows do
-    carry it. The notebook cells it replaced had the identical bug. Only
-    total_twins and total_filtered were ever read downstream, so no published
-    figure was affected - but it was a trap for anyone reaching for the rest.
-
-    `runtime` is in milliseconds. `num_edges` and `total_mates` really are
-    absent from this layout and come back as -1 rather than 0, so a caller that
-    plots them gets something obviously wrong instead of a plausible zero.
-    """
-    exhaustive_data = _empty_exhaustive_data()
-    for line in lines:
-        split_vec = line.strip().split(",")
-        (n, m, total_twins, total_filtered,
-         runtime, max_log_width, num_cliques) = list(map(int, split_vec[0:7]))
-        exhaustive_data["n"].append(n)
-        exhaustive_data["m"].append(m)
-        exhaustive_data["runtime"].append(runtime)
-        exhaustive_data["max_width"].append(max_log_width)
-        exhaustive_data["num_edges"].append(-1)
-        exhaustive_data["num_cliques"].append(num_cliques)
-        exhaustive_data["total_twins"].append(total_twins)
-        exhaustive_data["total_filtered"].append(total_filtered)
-        exhaustive_data["total_mates"].append(-1)
-        exhaustive_data["dist_results_dict"].append(dict())
-        exhaustive_data["hypergraphs"].append([])
-    return exhaustive_data
 
 
 def read_data_lines(lines, xgi_hypergraphs=True):

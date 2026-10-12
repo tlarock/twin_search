@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
-"""Compare the re-run density sweep against an older sampled run, statistically.
+"""Compare two sampled runs of the same (n, m, k) grid, statistically.
+
+Named for the density sweep it was written for, but it also serves the
+heatmap - the only thing that differed between them was whether the arms are
+balanced, and that is now detected rather than assumed. Usage:
+
+    compare_density_sweep.py <old_dir> <new_dir> [k]
 
 Companion to gram_mates' compare_sampled_figure7.py, which hardcodes 1000
-samples in BOTH arms. The density cells do not match that: the older run used
-100 samples per cell and the re-run uses 500, so the arms have different n and
-the filenames differ. Everything else - the statistic, the traps - is the same.
+samples in BOTH arms. The heatmap matches that; the density cells do not, since
+the older run used 100 samples per cell and the re-run uses 500. Whether the
+pooled estimate may be quoted follows from that and is decided at runtime - see
+the `unbalanced` check below.
 
 Headline statistic, as in Figure 7: p = #{samples with total_filtered > 1} / n.
+
+THE BASELINE IS NOT IN THIS REPO. Everything under twin_search/results/ is
+ours, including results/superseded/, whose README called itself published and
+was wrong. The published arm is
+~/git/gram_mates/results/reproducibility/sampled/. Confirm any baseline against
+its RUN_MANIFEST.tsv (published data has none) before quoting a comparison.
 
 The published samples predate --seed, so this is necessarily DISTRIBUTIONAL:
 two independent draws from the same generative model, one per code version.
@@ -36,6 +49,19 @@ def parse(path):
     mw, tw, tf, tm = [], [], [], []
     for line in open_text(path):
         h, t = line.find('/'), line.rfind('/') + 1
+        # A row with no '/' is the pre-TwinSearch layout, which packs the
+        # scalars and the hypergraph into one comma-separated list and carries
+        # no per-size-distribution section at all. Without this guard the
+        # parse does not fail: h is -1, the middle slice comes out empty, the
+        # `for i in range(0, -1, 2)` loop never runs, and every row reports
+        # total_twins = total_filtered = 0. The caller then prints a clean
+        # table saying P(multi-iso) = 0.0000 over the whole arm, which reads
+        # as a finding rather than as a file it could not read.
+        if h < 0:
+            raise ValueError(
+                f"{path}: no '/' in the first row - this is the pre-TwinSearch "
+                f"file layout, which this comparison cannot read. The published "
+                f"density-500 cells are in that format; re-run cells are not.")
         f = line[:h].split(',')
         mw.append(int(f[3])); tm.append(int(f[6]))
         mid = line[h + 1:t - 1].split('/')
@@ -107,13 +133,30 @@ def main(old_dir, new_dir, k_want=None):
     print(f"Mann-Whitney on total_twins p<0.05: {sum(r[6] < .05 for r in rows)}")
     print(f"KS on max_width p<0.05: {sum(r[7] < .05 for r in rows)}")
     po, pn = pooled['om']/pooled['on'], pooled['nm']/pooled['nn']
-    print(f"\nNAIVE pooling ({pooled['on']} old / {pooled['nn']} new samples)")
-    print(f"  P(multi-iso) old {po:.4f}   new {pn:.4f}   difference {pn-po:+.4f}")
-    print("  *** CONFOUNDED - do not quote. p varies from ~0 to ~1 across cells and")
-    print("      the arms weight those cells differently (100 vs 500 samples each,")
-    print("      and not the same set of cells at each count). This is Simpson's")
-    print("      paradox territory: the companion script could pool safely only")
-    print("      because both of its arms had exactly 1000 samples in every cell.")
+
+    # Whether pooling is legitimate is a property of the DESIGN, not of this
+    # script, so decide it from the data rather than hardcoding one dataset's
+    # answer. Pooling is safe exactly when every cell contributes the same
+    # number of samples to both arms - then the two pooled means are weighted
+    # identically across cells and no reweighting can masquerade as a shift.
+    # The heatmap comparison is 1000-vs-1000 everywhere and may pool; the
+    # density sweep is 100-vs-500 and may not.
+    unbalanced = [r for r in rows if r[3] != r[4]]
+    if not unbalanced:
+        print(f"\nPooled ({pooled['on']} old / {pooled['nn']} new samples)")
+        print(f"  P(multi-iso) old {po:.4f}   new {pn:.4f}   difference {pn-po:+.4f}")
+        print("  Balanced design - every cell has the same sample count in both")
+        print("  arms, so this is weighted identically across cells and is safe to")
+        print("  quote. Compare it against the stratified estimate below; they")
+        print("  should agree, and disagreement would mean a cell-weighting effect.")
+    else:
+        print(f"\nNAIVE pooling ({pooled['on']} old / {pooled['nn']} new samples)")
+        print(f"  P(multi-iso) old {po:.4f}   new {pn:.4f}   difference {pn-po:+.4f}")
+        print(f"  *** CONFOUNDED - do not quote. {len(unbalanced)} of {len(rows)} cells")
+        print("      carry different sample counts in the two arms, and p varies from")
+        print("      ~0 to ~1 across cells, so the pooled difference mixes a real")
+        print("      per-cell shift with a reweighting. Simpson's paradox territory:")
+        print("      quote the stratified estimate below instead.")
 
     # Cochran-Mantel-Haenszel: tests a common odds ratio ACROSS strata, so each
     # cell is compared only against itself. This is the pooled test that means
