@@ -30,7 +30,14 @@ slurm-scripts/
 # slurm-scripts/: it carries cluster paths and is useful on one machine.
 sync-della.sh
 
+# One-off deposit upload harness. Operational, not part of the reproduction
+# pipeline, and it reads a personal access token from outside the repo.
+zenodo-upload.sh
+
 # Generated figures. Every one is written by a notebook in analysis/notebooks/
 # from the data in the deposit, so they are reproducible output, not source -
 # same reasoning as results/.
 analysis/plots/
+
+# One-off deposit progress checker, same reasoning as zenodo-upload.sh.
+zenodo-progress.sh
