@@ -10,8 +10,8 @@
 // are outstanding when the search is interrupted. If the frontier is small and
 // plateaus, a checkpoint is cheap and can be taken often. If it grows without
 // bound, checkpointing dies the same way memoising the search did - on memory
-// rather than on principle. See docs/reuse-experiments.md, section 0: check the
-// space cost BEFORE building the time optimisation.
+// rather than on principle: check the space cost BEFORE building the time
+// optimisation.
 //
 // For each sample this drains at several wall-clock points and reports the
 // frontier size, so growth is visible rather than inferred from one reading.

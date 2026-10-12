@@ -65,7 +65,7 @@ class TwinSearch {
         //                            an armed search polls it.
         //
         // An unarmed search never checks anything, so none of this costs
-        // production runs. See docs/reuse-experiments.md section 5.
+        // production runs.
         void arm_drain(double seconds);
         void arm_drain_nodes(std::uint64_t nodes_per_thread);
         bool drained = false;
