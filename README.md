@@ -11,10 +11,7 @@ The code relies heavily on [uxlfoundation/oneTBB](https://github.com/uxlfoundati
 
 Similarly, the code requires `Boost`, specifically [Boost graph](https://www.boost.org/doc/libs/master/libs/graph/doc/index.html) and [uBLAS](https://www.boost.org/doc/libs/1_88_0/libs/numeric/ublas/doc/). As above, it is recommended to use `Conan2` to manage `Boost`, rather than linking to a separate installation.
 
-The code expects that you have two repositories cloned at the same level as this repository (e.g., in `../`). Both are header-only, so no further installation is required. The repositories are:
-* [morrisfranken/argparse](https://github.com/morrisfranken/argparse)
-* [mraggi/discreture](https://github.com/mraggi/discreture/tree/master)
-
+The code expects that you have the [morrisfranken/argparse](https://github.com/morrisfranken/argparse) argument parsing repository cloned at the same level as this repository (e.g., in `../`). It is header-only, so no further installation is required.
 
 # Compilation
 Assuming the above requirements are in place, the recommended way to compile the code is to use the [Conan2](https://docs.conan.io/2/) package management system. We provide a `conanfile.txt` at the top level of this repository that specifies the dependencies.
