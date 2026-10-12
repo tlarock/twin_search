@@ -65,11 +65,15 @@ ublas::matrix<int> Hypergraph::get_incidence_matrix() {
 UndirectedGraph Hypergraph::get_line_graph() {
     ublas::matrix<int> lg_mat = get_lg_mat();
     UndirectedGraph line_graph;
+    // lg_mat is A*A^T and so symmetric: lg_mat(r,c) == lg_mat(c,r). Walking all
+    // ordered pairs added every edge TWICE - the same defect d7edbf9 fixed in
+    // TwinSearch::compute_linegraph, which builds the same object on the
+    // production path. No answer here was ever wrong, because the doubling is
+    // uniform and so preserves isomorphism classes, which is exactly why it
+    // survived: it returns correct results at double the edges and double the
+    // memory. Starting at r + 1 also subsumes the old r == c guard.
     for (std::size_t r = 0; r < lg_mat.size1(); ++r) {
-        for (std::size_t c = 0; c < lg_mat.size2(); ++c) {
-            if (r == c)
-                continue;
-
+        for (std::size_t c = r + 1; c < lg_mat.size2(); ++c) {
             if (lg_mat(r, c) > 0) {
                 for (int v = 0; v < lg_mat(r,c); ++v)
                     boost::add_edge(r, c, line_graph);

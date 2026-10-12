@@ -471,3 +471,27 @@ TEST(HypergraphTest, LineGraphSizeIsBounded) {
             EXPECT_LE(lg(r, c), h.n) << "co-occurrence cannot exceed the node count";
     EXPECT_LT(boost::num_edges(h.get_line_graph()), 1000u);
 }
+
+// One edge per node shared by a pair of hyperedges, and no more. lg_mat = A*A^T
+// is symmetric, so walking all ordered pairs adds every edge twice - the defect
+// d7edbf9 fixed in TwinSearch::compute_linegraph, which was left in place here
+// because nothing on the production path calls this function. LineGraphSizeIsBounded
+// above cannot catch it: it allows anything under 1000 edges, and the honest
+// answer for this fixture is 5.
+TEST(HypergraphTest, LineGraphHasOneEdgePerSharedNodePerPair) {
+    std::vector<std::vector<int> > input = {{0,1,2},{1,2,3},{2,3,4}};
+    Hypergraph h(input);
+
+    // Counted directly from the hyperedges rather than hardcoded, so the test
+    // still means something if the fixture changes.
+    std::size_t expected = 0;
+    for (std::size_t r = 0; r < h.hyperedges.size(); r++) {
+        for (std::size_t c = r + 1; c < h.hyperedges.size(); c++) {
+            for (int u : h.hyperedges[static_cast<int>(r)])
+                for (int v : h.hyperedges[static_cast<int>(c)])
+                    if (u == v) expected++;
+        }
+    }
+    EXPECT_EQ(expected, 5u) << "fixture sanity: |e0^e1| + |e0^e2| + |e1^e2| = 2 + 1 + 2";
+    EXPECT_EQ(boost::num_edges(h.get_line_graph()), expected);
+}
