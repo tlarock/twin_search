@@ -11,7 +11,7 @@ generate the figures in the paper is on Zenodo:
 
 **DOI:** [10.5281/zenodo.23321964](https://doi.org/10.5281/zenodo.23321964) — the concept DOI, which always resolves to the latest version.
 
-A single 844 MB archive, `twin-search-reproducibility-core.tar`, reproduces
+A single 841 MiB archive, `twin-search-reproducibility-core.tar`, reproduces
 **all seven figures**. It holds the exhaustive enumerations, the sampled grids,
 and the per-projection distance statistics that Figure 6 plots, with the
 commit, seed and thread count each cell was produced with recorded alongside
