@@ -124,6 +124,8 @@ Note: The main language feature that causes problems seems to be `std::format`. 
 |   |-- run_density_ordered.sh
 |   |-- estimate_density_cost.py
 |   |-- compute_distances.sh        pairwise twin-distance matrices
+|   |-- parallel_distances.py       the distance worker it drives
+|   |-- hypergraph_hamming.py       Hamming / symmetric-difference distances
 |   |-- convert_distance_matrices.py
 |   |-- build_distance_stats.py
 |   |-- matching_indices.py

@@ -37,9 +37,13 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GRAM=/Users/tl2574/git/gram_mates
-PY="$GRAM/.venv/bin/python"
-DRIVER="$GRAM/results/python/parallel_distances.py"
+# The worker lives in this repository (vendored 2026-10-13 - it used to be
+# driven out of a private companion checkout, which made this script
+# unrunnable for anyone else).
+DRIVER="$REPO/scripts/parallel_distances.py"
+# Any python3 with numpy, scipy, xgi and tqdm. Override for a venv:
+#     PY=/path/to/.venv/bin/python ./scripts/compute_distances.sh
+PY="${PY:-python3}"
 
 DISTS=hyperNS,hyperPD,jaccard
 CORES=6
@@ -65,11 +69,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-for f in "$PY" "$DRIVER"; do
-    [ -e "$f" ] || { echo "missing: $f" >&2; exit 1; }
-done
+[ -e "$DRIVER" ] || { echo "missing: $DRIVER" >&2; exit 1; }
+command -v "$PY" >/dev/null 2>&1 || [ -x "$PY" ] || {
+    echo "no usable python: $PY  (set PY=/path/to/python)" >&2; exit 1; }
 "$PY" -c 'import xgi, scipy, numpy, tqdm' 2>/dev/null || {
-    echo "the gram_mates venv is missing a dependency (xgi/scipy/numpy/tqdm)" >&2; exit 1; }
+    echo "$PY is missing a dependency. Needs: xgi scipy numpy tqdm" >&2
+    echo "  pip install xgi scipy numpy tqdm    (or set PY to a venv python)" >&2
+    exit 1; }
 
 mkdir -p "$OUT"
 LOG="$OUT/compute_distances.log"
@@ -112,7 +118,7 @@ for d in "${DIST_ARR[@]}"; do
     START=$(date +%s)
     say "  m=$m $d: starting ($(wc -l < "$WORK/$BASE.csv" | tr -d ' ') projections)"
     # nice: this runs for hours on a laptop and should yield to everything else.
-    ( cd "$GRAM/results/python" && \
+    ( cd "$REPO/scripts" && \
       nice -n 10 "$PY" "$DRIVER" -n 6 -k 3 -m "$m" \
         --results-dir "$WORK/" --output-dir "$WORK/" \
         "--${d}" --nprocs "$CORES" ) >> "$LOG" 2>&1
