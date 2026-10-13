@@ -138,7 +138,6 @@ Note: The main language feature that causes problems seems to be `std::format`. 
 |       |-- distance_stats.py       readers for the result files
 |       |-- projection_utils.py
 |       |-- compare_density_sweep.py
-|       |-- nested_twin_reuse.py
 |       |-- test_projection_utils.py
 |-- ./docker/                       container useful for HPC builds
     |-- Dockerfile
