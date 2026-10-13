@@ -9,29 +9,29 @@ Code for enumerating all hypergraphs that correspond to a weighted node co-occur
 The calculations are computationally intensive. An archive of the data used to
 generate the figures in the paper is on Zenodo:
 
-**DOI:** [10.5281/zenodo.23321964](https://doi.org/10.5281/zenodo.23321964) — the concept DOI, which always resolves to the latest version.
+**DOI:** [10.5281/zenodo.23321964](https://doi.org/10.5281/zenodo.23321964).
 
-A single 841 MiB archive, `twin-search-reproducibility-core.tar`, reproduces
-**all seven figures**. It holds the exhaustive enumerations, the sampled grids,
-and the per-projection distance statistics that Figure 6 plots, with the
-commit, seed and thread count each cell was produced with recorded alongside
-it. It carries its own `README.md` describing the layout and file formats, and
-a `MANIFEST.tsv` of SHA-256 checksums so the contents can be verified after
-download.
+The `twin-search-reproducibility-core.tar` archive reproduces all seven figures.
+It holds the exhaustive enumerations, the sampled grids, and the per-projection
+distance statistics that Figure 6 plots, with the commit, seed and thread count
+each cell was produced with recorded alongside it. It has its own `README.md`
+describing the layout and file formats, and a `MANIFEST.tsv` of SHA-256 checksums
+so the contents can be verified after download.
 
 The raw pairwise distance matrices that Figure 6's statistics were derived from
-(29 GB compressed, 103 GB uncompressed) are **not** deposited: they are 97% of
-the data by volume, and no notebook reads them — the figure is plotted from the
-precomputed tables, which are in the archive. Contact us if you want them.
+(29 GB compressed, 103 GB uncompressed) are not in the Zenodo deposit. They are 97% of
+the data by volume, and are not needed to generate the figures, which take
+precomputed tables as input and are in the archive. Please feel free to contact Tim
+LaRock if you want them.
 
 The notebooks in `analysis/notebooks/` read the archive directly and reproduce
-each figure from it.
+each figure as indicated in the filenames.
 
 # Commit provenance
 
 Code for reproducibility is stable since
 [`7a44c3e`](https://github.com/tlarock/twin_search/commit/7a44c3e), the commit
-that generated every dataset in the archive; each cell records that hash in its
+that generated every dataset in the archive. Each cell records that hash in its
 own metadata. Notebooks for plotting the figures were added in
 [`a913c49`](https://github.com/tlarock/twin_search/commit/a913c49), which
 touched no compiled source. Later commits do not affect the generated data.
@@ -140,7 +140,7 @@ Note: The main language feature that causes problems seems to be `std::format`. 
 |       |-- compare_density_sweep.py
 |       |-- nested_twin_reuse.py
 |       |-- test_projection_utils.py
-|-- ./docker/                       container used for the cluster runs
+|-- ./docker/                       container useful for HPC builds
     |-- Dockerfile
     |-- run.sh
 ```
